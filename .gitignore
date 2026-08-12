@@ -1,0 +1,31 @@
+﻿# Flutter
+.dart_tool/
+build/
+.pub-cache/
+.pub/
+*.lock
+
+# Windows
+windows/
+*.exe
+*.dll
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# System
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Database (se non vuoi versionare il DB)
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env

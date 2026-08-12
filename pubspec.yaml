@@ -1,0 +1,86 @@
+name: musica_per_tutti_app
+description: "App per la gestione di eventi musicali live inclusivi - Musica per Tutti"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ============================================
+  # DATABASE SQLite
+  # ============================================
+  sqflite: ^2.3.0
+  sqflite_common_ffi: ^2.3.0
+  sqflite_common_ffi_web: ^1.1.0
+  path_provider: ^2.1.0
+  path: ^1.9.0
+
+  # ============================================
+  # AUTENTICAZIONE E SICUREZZA
+  # ============================================
+  crypto: ^3.0.3
+
+  # ============================================
+  # UI E UTILITÀ
+  # ============================================
+  cupertino_icons: ^1.0.6
+  intl: ^0.18.1
+  share_plus: ^7.2.1
+  image_picker: ^1.0.4
+  file_picker: ^8.1.7
+  flutter_local_notifications: ^18.0.0
+  url_launcher: ^6.3.2
+  connectivity_plus: ^5.0.2
+  open_file: ^3.4.0
+
+  # ============================================
+  # AUDIO E SPARTITI
+  # ============================================
+  audioplayers: ^5.2.0
+  pdf: ^3.10.0
+  printing: ^5.11.0
+
+  # ============================================
+  # GESTIONE FILE MXL (MusicXML Compresso)
+  # ============================================
+  archive: ^3.4.0
+  xml: ^6.3.0
+
+  # ============================================
+  # VISUALIZZAZIONE DOCUMENTI ABC e MXL
+  # ============================================
+  webview_flutter: ^4.10.0
+  http: ^1.2.2
+
+  # ============================================
+  # STATO E NAVIGAZIONE
+  # ============================================
+  provider: ^6.0.5
+  flutter_riverpod: ^2.4.0
+
+  # ============================================
+  # STORAGE LOCALE
+  # ============================================
+  shared_preferences: ^2.2.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  hive_generator: ^2.0.1
+  build_runner: ^2.4.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/db/
+    - assets/sheets/
+    - assets/audio/

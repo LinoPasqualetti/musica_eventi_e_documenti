@@ -729,7 +729,24 @@ class DatabaseService {
     });
   }
 
-// ✅ OTTIENI GLI STRUMENTI PER BRANO IN UN EVENTO
+  /// Ottiene il conteggio dei documenti per ogni brano
+  Future<Map<String, int>> getDocumentsCountBySong() async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+    SELECT 
+      sd.song_id,
+      COUNT(DISTINCT sd.document_id) as count
+    FROM song_documents sd
+    GROUP BY sd.song_id
+  ''');
+
+    final Map<String, int> countMap = {};
+    for (var row in result) {
+      countMap[row['song_id'] as String] = row['count'] as int;
+    }
+    return countMap;
+  }
+  // ✅ OTTIENI GLI STRUMENTI PER BRANO IN UN EVENTO
   Future<Map<String, List<String>>> getInstrumentsBySongForEvent(String eventId) async {
     final db = await database;
 

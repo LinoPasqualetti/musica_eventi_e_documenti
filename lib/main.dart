@@ -5,6 +5,7 @@ import 'screens/home_screen.dart';
 import 'providers/auth_provider.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
 

@@ -1,36 +1,33 @@
 // lib/screens/abc_viewer_screen.dart
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:open_file/open_file.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 
 class AbcViewerScreen extends StatefulWidget {
   final String filePath;
   final String fileName;
 
   const AbcViewerScreen({
-    Key? key,
+    super.key,
     required this.filePath,
     required this.fileName,
-  }) : super(key: key);
+  });
 
   @override
   State<AbcViewerScreen> createState() => _AbcViewerScreenState();
 }
 
 class _AbcViewerScreenState extends State<AbcViewerScreen> {
-  late WebViewController _controller;
   String _abcContent = '';
-  String _error = '';
   bool _isLoading = true;
-  bool _isWebViewReady = false;
+  String _error = '';
 
   @override
   void initState() {
     super.initState();
     _loadAbcContent();
-    _initWebView();
   }
 
   void _loadAbcContent() {
@@ -41,72 +38,38 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
         print('📄 ABC caricato: ${_abcContent.length} caratteri');
       } else {
         _error = 'File non trovato: ${widget.filePath}';
-        print('❌ $_error');
-        setState(() { _isLoading = false; });
       }
     } catch (e) {
       _error = 'Errore: $e';
-      print('❌ $_error');
-      setState(() { _isLoading = false; });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
-  void _initWebView() {
-    final htmlContent = _buildHtmlContent();
+  String _getAbcInfo() {
+    final lines = _abcContent.split('\n');
+    String title = '';
+    String composer = '';
+    String meter = '';
+    String key = '';
 
-    _saveHtmlToTemp(htmlContent).then((path) {
-      if (path != null) {
-        _controller = WebViewController()
-          ..setJavaScriptMode(JavaScriptMode.unrestricted)
-          ..setBackgroundColor(const Color(0x00000000))
-          ..setNavigationDelegate(
-            NavigationDelegate(
-              onProgress: (int progress) {
-                print('🔵 WebView progress: $progress%');
-              },
-              onPageStarted: (String url) {
-                print('🔵 WebView page started: $url');
-                setState(() {
-                  _isLoading = true;
-                });
-              },
-              onPageFinished: (String url) {
-                print('🔵 WebView page finished: $url');
-                setState(() {
-                  _isLoading = false;
-                  _isWebViewReady = true;
-                });
-              },
-              onWebResourceError: (WebResourceError error) {
-                print('❌ WebView error: ${error.description}');
-                setState(() {
-                  _error = 'Errore WebView: ${error.description}';
-                  _isLoading = false;
-                });
-              },
-            ),
-          )
-          ..loadFile(path);
-      } else {
-        setState(() {
-          _error = 'Impossibile creare il file HTML temporaneo';
-          _isLoading = false;
-        });
-      }
-    });
-  }
-
-  Future<String?> _saveHtmlToTemp(String htmlContent) async {
-    try {
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/abc_viewer_${DateTime.now().millisecondsSinceEpoch}.html');
-      await file.writeAsString(htmlContent, flush: true);
-      print('✅ HTML salvato: ${file.path}');
-      return file.path;
-    } catch (e) {
-      print('❌ Errore salvataggio HTML: $e');
-      return null;
+    for (var line in lines) {
+      if (line.startsWith('T:')) title = line.substring(2).trim();
+      if (line.startsWith('C:')) composer = line.substring(2).trim();
+      if (line.startsWith('M:')) meter = line.substring(2).trim();
+      if (line.startsWith('K:')) key = line.substring(2).trim();
     }
+
+    return '''
+Titolo: $title
+Compositore: $composer
+Metro: $meter
+Tonalità: $key
+Righe: ${lines.length}
+Caratteri: ${_abcContent.length}
+''';
   }
 
   String _buildHtmlContent() {
@@ -156,6 +119,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
       border-radius: 8px;
       border: 1px solid #e0e0e0;
       min-height: 200px;
+      overflow: auto;
     }
     #abc-container svg { max-width: 100%; height: auto; }
     #controls {
@@ -180,37 +144,16 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     .btn-secondary:hover { background: #d0d0d0; }
     .btn-success { background: #4caf50; color: white; }
     .btn-success:hover { background: #66bb6a; }
+    .btn-danger { background: #dc3545; color: white; }
+    .btn-danger:hover { background: #c82333; }
     #error {
       color: #d32f2f;
       padding: 16px;
       background: #ffebee;
       border-radius: 8px;
       text-align: center;
-    }
-    #playback-controls {
       margin-top: 16px;
-      padding: 16px;
-      background: #f5f5f5;
-      border-radius: 8px;
     }
-    .midi-controls {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
-    .midi-btn {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 8px;
-      font-size: 20px;
-      cursor: pointer;
-      background: #673ab7;
-      color: white;
-    }
-    .midi-btn:hover { background: #7c4dff; }
-    .midi-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     #abc-source {
       margin-top: 16px;
       padding: 12px;
@@ -225,6 +168,14 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
       white-space: pre-wrap;
       word-wrap: break-word;
     }
+    #playback-status {
+      margin-top: 16px;
+      padding: 12px;
+      background: #f5f5f5;
+      border-radius: 8px;
+      text-align: center;
+      font-weight: 500;
+    }
     @media (max-width: 600px) {
       #container { padding: 12px; }
       #title { font-size: 18px; }
@@ -238,36 +189,44 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     <div id="abc-container"></div>
     <div id="controls">
       <button class="btn btn-primary" onclick="playABC()">▶ Play</button>
-      <button class="btn btn-secondary" onclick="stopABC()">⏹ Stop</button>
+      <button class="btn btn-danger" onclick="stopABC()">⏹ Stop</button>
       <button class="btn btn-success" onclick="exportPDF()">📄 Esporta PDF</button>
       <button class="btn btn-secondary" onclick="toggleSource()">📋 Mostra ABC</button>
     </div>
-    <div id="playback-controls">
-      <div class="midi-controls">
-        <button class="midi-btn" id="playBtn" onclick="playABC()">▶</button>
-        <span id="playback-status">⏸ In attesa</span>
-        <input type="range" id="tempoSlider" min="40" max="200" value="120" 
-               onchange="setTempo(this.value)" style="width:120px;">
-        <span id="tempoLabel">120 BPM</span>
-        <button class="midi-btn" onclick="stopABC()">⏹</button>
-      </div>
-    </div>
     <div id="abc-source"></div>
     <div id="error" style="display:none;"></div>
+    <div id="playback-status">⏸ In attesa</div>
   </div>
   
   <script src="https://cdn.jsdelivr.net/npm/abcjs@6.0.0/dist/abcjs-basic-min.js"></script>
   <script>
     var abcString = `$escapedAbc`;
     var visualObj = null;
-    var midiPlayer = null;
     var isPlaying = false;
+    var audioElement = null;
+    var currentUrl = null;
+    
+    function showError(msg) {
+      var errorDiv = document.getElementById('error');
+      errorDiv.style.display = 'block';
+      errorDiv.innerText = msg;
+    }
+    
+    function hideError() {
+      document.getElementById('error').style.display = 'none';
+    }
+    
+    function updateStatus(text, color) {
+      var status = document.getElementById('playback-status');
+      status.innerText = text;
+      if (color) status.style.color = color;
+    }
     
     if (!abcString || abcString.trim() === '') {
-      document.getElementById('error').style.display = 'block';
-      document.getElementById('error').innerText = '⚠️ Contenuto ABC vuoto o non valido';
+      showError('⚠️ Contenuto ABC vuoto o non valido');
     } else {
       try {
+        hideError();
         visualObj = ABCJS.renderAbc('abc-container', abcString, {
           responsive: 'resize',
           staffwidth: 700,
@@ -277,42 +236,73 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
           add_classes: true,
           generateParts: true,
           generatePartNames: true,
+          generatePlayback: true,
         });
         
         if (!visualObj || visualObj.length === 0) {
-          document.getElementById('error').style.display = 'block';
-          document.getElementById('error').innerText = '⚠️ Errore: ABC non valido o non renderizzabile';
+          showError('⚠️ Errore: ABC non valido o non renderizzabile');
         } else {
+          updateStatus('✅ Spartito caricato', '#4caf50');
+          
+          // Crea l'elemento audio per il MIDI
           try {
-            midiPlayer = new ABCJS.synth.SynthController();
-            midiPlayer.load('/',
-              function() { console.log('🎵 MIDI Synth caricato'); },
-              function(error) { console.warn('⚠️ MIDI Synth error:', error); }
-            );
-          } catch(e) { console.log('MIDI non disponibile:', e); }
+            audioElement = new Audio();
+            audioElement.controls = false;
+            audioElement.style.display = 'none';
+            document.body.appendChild(audioElement);
+          } catch(e) {
+            console.warn('Audio non disponibile:', e);
+          }
         }
       } catch(e) {
-        document.getElementById('error').style.display = 'block';
-        document.getElementById('error').innerText = '❌ Errore render: ' + e.message;
+        showError('❌ Errore render: ' + e.message);
         console.error('ABC render error:', e);
       }
     }
     
     function playABC() {
-      if (!visualObj || visualObj.length === 0) { alert('Nessuna musica da suonare'); return; }
-      if (isPlaying) { stopABC(); return; }
+      if (!visualObj || visualObj.length === 0) {
+        alert('Nessuna musica da suonare');
+        return;
+      }
+      
+      if (isPlaying) {
+        stopABC();
+        return;
+      }
       
       try {
-        var synth = new ABCJS.synth.SynthController();
-        var midiData = synth.prepare(abcString);
-        synth.prime(midiData);
-        synth.start();
-        isPlaying = true;
-        document.getElementById('playBtn').innerHTML = '⏸';
-        document.getElementById('playback-status').innerText = '▶ Riproduzione in corso...';
+        // Metodo: usa ABCJS.getMidi per generare il MIDI
+        var midiContent = ABCJS.getMidi(abcString);
+        if (!midiContent) {
+          alert('Impossibile generare il MIDI da questo ABC');
+          return;
+        }
         
-        var duration = visualObj[0]?.duration || 30;
-        setTimeout(function() { if (isPlaying) stopABC(); }, duration * 1000 + 1000);
+        // Converti i dati MIDI in un blob
+        var midiData = midiContent;
+        var blob = new Blob([midiData], {type: 'audio/midi'});
+        var url = URL.createObjectURL(blob);
+        currentUrl = url;
+        
+        if (audioElement) {
+          audioElement.src = url;
+          audioElement.play();
+          isPlaying = true;
+          updateStatus('▶ Riproduzione...', '#4caf50');
+          
+          audioElement.onended = function() {
+            stopABC();
+          };
+          
+          audioElement.onerror = function() {
+            // Se il MIDI non funziona, prova con la versione web di abcjs
+            alert('Errore: il browser potrebbe non supportare la riproduzione MIDI.\nProva a usare un visualizzatore online.');
+            stopABC();
+          };
+        } else {
+          alert('Player audio non disponibile');
+        }
       } catch(e) {
         console.error('Errore riproduzione:', e);
         alert('Errore nella riproduzione: ' + e.message);
@@ -321,21 +311,24 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     
     function stopABC() {
       try {
-        if (window.abcjs && window.abcjs.synth) {
-          var players = document.querySelectorAll('audio');
-          players.forEach(function(p) { p.pause(); });
+        if (audioElement) {
+          audioElement.pause();
+          audioElement.currentTime = 0;
+        }
+        if (currentUrl) {
+          URL.revokeObjectURL(currentUrl);
+          currentUrl = null;
         }
         isPlaying = false;
-        document.getElementById('playBtn').innerHTML = '▶';
-        document.getElementById('playback-status').innerText = '⏸ Fermo';
-      } catch(e) { console.log('Stop error:', e); }
+        updateStatus('⏸ Fermo', '#333');
+      } catch(e) {
+        console.log('Stop error:', e);
+      }
     }
     
-    function setTempo(value) {
-      document.getElementById('tempoLabel').innerText = value + ' BPM';
+    function exportPDF() {
+      window.print();
     }
-    
-    function exportPDF() { window.print(); }
     
     function toggleSource() {
       var sourceDiv = document.getElementById('abc-source');
@@ -347,12 +340,83 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
       }
     }
     
-    window.addEventListener('resize', function() {});
+    window.addEventListener('resize', function() {
+      if (visualObj) {
+        ABCJS.renderAbc('abc-container', abcString, {
+          responsive: 'resize',
+          staffwidth: Math.min(700, window.innerWidth - 80),
+          scale: 1.0,
+          paddingtop: 10,
+          paddingbottom: 10,
+        });
+      }
+    });
+    
     console.log('🎵 ABC Viewer loaded');
+    console.log('ABC length:', abcString.length);
   </script>
 </body>
 </html>
     ''';
+  }
+
+  Future<void> _openInBrowser() async {
+    try {
+      final htmlContent = _buildHtmlContent();
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/abc_viewer_${DateTime.now().millisecondsSinceEpoch}.html');
+      await file.writeAsString(htmlContent, flush: true);
+
+      final url = file.path;
+      print('📂 Apertura in browser: $url');
+
+      if (await canLaunchUrl(Uri.file(url))) {
+        await launchUrl(Uri.file(url), mode: LaunchMode.externalApplication);
+      } else {
+        throw 'Impossibile aprire il browser';
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _copyToClipboard() async {
+    try {
+      await Clipboard.setData(ClipboardData(text: _abcContent));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📋 ABC copiato negli appunti!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _downloadAbc() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('⬇️ Download ABC'),
+        backgroundColor: Colors.blue,
+      ),
+    );
   }
 
   @override
@@ -372,14 +436,21 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
               children: [
                 const Icon(Icons.error_outline, size: 64, color: Colors.red),
                 const SizedBox(height: 16),
-                const Text('Errore', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const Text(
+                  'Errore',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 8),
-                Text(_error, style: TextStyle(color: Colors.grey.shade600), textAlign: TextAlign.center),
+                Text(
+                  _error,
+                  style: TextStyle(color: Colors.grey.shade600),
+                  textAlign: TextAlign.center,
+                ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
-                  onPressed: () => _openWithDefaultApp(),
-                  icon: const Icon(Icons.open_in_browser),
-                  label: const Text('Apri con app predefinita'),
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Indietro'),
                 ),
               ],
             ),
@@ -388,7 +459,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
       );
     }
 
-    if (_isLoading || !_isWebViewReady) {
+    if (_isLoading) {
       return Scaffold(
         appBar: AppBar(
           title: Text(widget.fileName),
@@ -415,64 +486,143 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: () => _downloadAbc(),
-            tooltip: 'Download',
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () => _shareAbc(),
-            tooltip: 'Condividi',
-          ),
-          IconButton(
             icon: const Icon(Icons.open_in_browser),
-            onPressed: () => _openWithDefaultApp(),
-            tooltip: 'Apri con app predefinita',
+            onPressed: _openInBrowser,
+            tooltip: 'Apri nel browser con spartito',
+          ),
+          IconButton(
+            icon: const Icon(Icons.copy),
+            onPressed: _copyToClipboard,
+            tooltip: 'Copia ABC',
+          ),
+          IconButton(
+            icon: const Icon(Icons.download),
+            onPressed: _downloadAbc,
+            tooltip: 'Download',
           ),
         ],
       ),
-      body: WebViewWidget(controller: _controller),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // Info file
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.deepPurple.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.deepPurple.shade200),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: Colors.deepPurple),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _getAbcInfo(),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Legenda colori
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                _buildLegendItem('X:', 'Numero', Colors.blue),
+                _buildLegendItem('T:', 'Titolo', Colors.green),
+                _buildLegendItem('C:', 'Compositore', Colors.orange),
+                _buildLegendItem('M:', 'Metro', Colors.purple),
+                _buildLegendItem('K:', 'Tonalità', Colors.red),
+                _buildLegendItem('|', 'Battuta', Colors.grey),
+                _buildLegendItem('%%', 'Commento', Colors.grey.shade400),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Contenuto ABC
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    _abcContent,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 13,
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Pulsanti
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back),
+                    label: const Text('Indietro'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _openInBrowser,
+                    icon: const Icon(Icons.open_in_browser),
+                    label: const Text('Apri Spartito'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurple,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '💡 Clicca "Apri Spartito" per vedere le note e ascoltare la musica',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade500,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
     );
   }
 
-  void _downloadAbc() async {
-    try {
-      final file = File(widget.filePath);
-      if (await file.exists()) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('⬇️ Download: ${widget.fileName}'), backgroundColor: Colors.green),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('❌ Errore: $e'), backgroundColor: Colors.red),
-      );
-    }
-  }
-
-  void _shareAbc() async {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('🔗 Condivisione ABC'), backgroundColor: Colors.blue),
+  Widget _buildLegendItem(String key, String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Text(
+        '$key $label',
+        style: TextStyle(
+          fontSize: 10,
+          color: color,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
     );
-  }
-
-  void _openWithDefaultApp() async {
-    try {
-      final result = await OpenFile.open(widget.filePath);
-      if (result.type == ResultType.done) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('✅ Aperto: ${widget.fileName}'), backgroundColor: Colors.green),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('❌ Errore: $e'), backgroundColor: Colors.red),
-      );
-    }
   }
 }

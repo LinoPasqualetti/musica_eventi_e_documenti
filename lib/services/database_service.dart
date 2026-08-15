@@ -18,16 +18,17 @@ import '../models/song_model.dart';
 import '../models/registration_model.dart';
 import '../models/musical_document.dart';
 import '../models/user_model.dart';
-import '../models/event_song.dart';
-import '../models/song_document.dart';
+//import '../models/event_song.dart'; // RIMOSSO - ora in event_model.dart
+import 'database_migration.dart';
+
 class DatabaseService {
   static Database? _database;
   static bool _initialized = false;
   static bool _isWeb = kIsWeb;
   static bool _forceCopyFromAsset = false;
 
-  // Versione del database - fissa per evitare ricopie automatiche
-  static const int DB_VERSION = 1;
+  // Versione del database - AUMENTATA A 2 PER LA MIGRAZIONE
+  static const int DB_VERSION = 2;
 
   DatabaseService() {
     _initDatabaseFactory();
@@ -72,7 +73,6 @@ class DatabaseService {
 
     print('📁 Database path: $path');
 
-    // ✅ Su web, forza la copia solo se necessario
     final bool shouldCopy = await _shouldCopyDatabase(path);
 
     if (shouldCopy) {
@@ -85,18 +85,17 @@ class DatabaseService {
     return await openDatabase(
       path,
       version: DB_VERSION,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
       onOpen: (db) {
         print('✅ Database aperto con successo');
       },
     );
   }
 
-// ✅ MODIFICA _shouldCopyDatabase PER IL WEB
   Future<bool> _shouldCopyDatabase(String path) async {
     if (_isWeb) {
-      // ✅ Su web, non copiare mai se esiste già
-      // Usa una chiave in sessionStorage per tracciare la versione
-      return false;  // Non copiare automaticamente
+      return false;
     }
 
     if (_forceCopyFromAsset) {
@@ -115,7 +114,6 @@ class DatabaseService {
     return true;
   }
 
-  // ✅ METODO PER COPIARE DA ASSET (chiamato solo dall'admin)
   Future<void> forceCopyFromAsset() async {
     print('🔄 FORZATURA COPIA DA ASSET richiesta dall\'admin');
     _forceCopyFromAsset = true;
@@ -133,6 +131,8 @@ class DatabaseService {
     _database = await openDatabase(
       path,
       version: DB_VERSION,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
       onOpen: (db) {
         print('✅ Database riaperto dopo copia da asset');
       },
@@ -142,7 +142,6 @@ class DatabaseService {
     print('✅ Copia da asset completata');
   }
 
-  // ✅ COPIA IL DATABASE DA ASSET
   Future<void> _copyDatabaseFromAsset(String destinationPath) async {
     try {
       print('📁 Copia database da asset a: $destinationPath');
@@ -165,22 +164,37 @@ class DatabaseService {
     }
   }
 
-  // ✅ CREA UN DATABASE VUOTO
   Future<void> _createEmptyDatabase(String path) async {
     final db = await openDatabase(
       path,
       version: DB_VERSION,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
     await db.close();
     print('✅ Database vuoto creato (solo tabelle)');
   }
 
-  // ✅ CREAZIONE TABELLE
+  // ============================================
+  // CREAZIONE TABELLE
+  // ============================================
+
   Future<void> _onCreate(Database db, int version) async {
     print('🔄 Creazione tabelle versione $version');
     await _createTables(db);
-    print('✅ Tabelle create (senza dati di default)');
+    await _createViews(db);
+    print('✅ Tabelle e viste create');
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    print('🔄 Aggiornamento database da versione $oldVersion a $newVersion');
+
+    if (oldVersion < 2) {
+      // Esegui la migrazione per la nuova tabella event_song_documents
+      await DatabaseMigration.runMigrations(db);
+      // Crea le viste dopo la migrazione
+      await _createViews(db);
+    }
   }
 
   Future<void> _createTables(Database db) async {
@@ -275,6 +289,36 @@ class DatabaseService {
     ''');
 
     await db.execute('''
+      CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        doc_type TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size INTEGER,
+        description TEXT,
+        is_public BOOLEAN DEFAULT 1,
+        uploaded_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS song_documents (
+        id TEXT PRIMARY KEY,
+        song_id TEXT NOT NULL,
+        document_id TEXT NOT NULL,
+        order_index INTEGER DEFAULT 0,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE,
+        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+        UNIQUE(song_id, document_id)
+      )
+    ''');
+
+    await db.execute('''
       CREATE TABLE IF NOT EXISTS event_songs (
         id TEXT PRIMARY KEY,
         event_id TEXT NOT NULL,
@@ -282,7 +326,26 @@ class DatabaseService {
         order_index INTEGER DEFAULT 0,
         notes TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT
+        updated_at TEXT,
+        FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE,
+        UNIQUE(event_id, song_id)
+      )
+    ''');
+
+    // NUOVA TABELLA: event_song_documents
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS event_song_documents (
+        id TEXT PRIMARY KEY,
+        event_song_id TEXT NOT NULL,
+        document_id TEXT NOT NULL,
+        order_index INTEGER DEFAULT 0,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        FOREIGN KEY (event_song_id) REFERENCES event_songs(id) ON DELETE CASCADE,
+        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+        UNIQUE(event_song_id, document_id)
       )
     ''');
 
@@ -390,6 +453,113 @@ class DatabaseService {
         last_accessed TEXT
       )
     ''');
+
+    // Crea indici per performance
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_event_song ON event_song_documents(event_song_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_document ON event_song_documents(document_id)');
+  }
+
+  // ============================================
+  // CREAZIONE VISTE
+  // ============================================
+
+  Future<void> _createViews(Database db) async {
+    print('📋 Creazione viste...');
+
+    // Vista: documenti per evento
+    await db.execute('''
+      DROP VIEW IF EXISTS v_event_documents
+    ''');
+
+    await db.execute('''
+      CREATE VIEW v_event_documents AS
+      SELECT 
+        e.id AS event_id,
+        e.title AS event_title,
+        e.date AS event_date,
+        e.location AS event_location,
+        s.id AS song_id,
+        s.title AS song_title,
+        s.composer AS song_composer,
+        d.id AS document_id,
+        d.file_name AS document_name,
+        d.doc_type AS document_type,
+        d.file_path AS document_path,
+        d.file_size AS document_size,
+        d.description AS document_description,
+        esd.id AS event_song_document_id,
+        esd.order_index AS document_order,
+        esd.notes AS document_notes,
+        es.order_index AS song_order,
+        'event_specific' AS document_source
+      FROM events e
+      JOIN event_songs es ON e.id = es.event_id
+      JOIN songs s ON es.song_id = s.id
+      JOIN event_song_documents esd ON es.id = esd.event_song_id
+      JOIN documents d ON esd.document_id = d.id
+
+      UNION ALL
+
+      SELECT 
+        e.id AS event_id,
+        e.title AS event_title,
+        e.date AS event_date,
+        e.location AS event_location,
+        s.id AS song_id,
+        s.title AS song_title,
+        s.composer AS song_composer,
+        d.id AS document_id,
+        d.file_name AS document_name,
+        d.doc_type AS document_type,
+        d.file_path AS document_path,
+        d.file_size AS document_size,
+        d.description AS document_description,
+        NULL AS event_song_document_id,
+        sd.order_index AS document_order,
+        sd.notes AS document_notes,
+        es.order_index AS song_order,
+        'global' AS document_source
+      FROM events e
+      JOIN event_songs es ON e.id = es.event_id
+      JOIN songs s ON es.song_id = s.id
+      JOIN song_documents sd ON s.id = sd.song_id
+      JOIN documents d ON sd.document_id = d.id
+      WHERE NOT EXISTS (
+        SELECT 1 
+        FROM event_song_documents esd 
+        WHERE esd.event_song_id = es.id 
+        AND esd.document_id = d.id
+      )
+    ''');
+
+    // Vista riassuntiva: conteggio documenti per evento e brano
+    await db.execute('''
+      DROP VIEW IF EXISTS v_event_documents_summary
+    ''');
+
+    await db.execute('''
+      CREATE VIEW v_event_documents_summary AS
+      SELECT 
+        e.id AS event_id,
+        e.title AS event_title,
+        s.id AS song_id,
+        s.title AS song_title,
+        COUNT(DISTINCT d.id) AS total_documents,
+        COUNT(DISTINCT CASE WHEN esd.id IS NOT NULL THEN d.id END) AS event_specific_documents,
+        COUNT(DISTINCT CASE WHEN sd.id IS NOT NULL AND esd.id IS NULL THEN d.id END) AS global_documents,
+        GROUP_CONCAT(DISTINCT d.doc_type) AS document_types,
+        es.order_index AS song_order
+      FROM events e
+      JOIN event_songs es ON e.id = es.event_id
+      JOIN songs s ON es.song_id = s.id
+      LEFT JOIN song_documents sd ON s.id = sd.song_id
+      LEFT JOIN documents d ON sd.document_id = d.id
+      LEFT JOIN event_song_documents esd ON es.id = esd.event_song_id AND esd.document_id = d.id
+      GROUP BY e.id, s.id
+      ORDER BY e.date DESC, es.order_index ASC
+    ''');
+
+    print('✅ Viste create');
   }
 
   // ========== METODI UTILITY ==========
@@ -398,7 +568,6 @@ class DatabaseService {
     return '${DateTime.now().millisecondsSinceEpoch}';
   }
 
-  // ✅ OTTIENI IL PERCORSO DEL DATABASE
   Future<String> getDatabasePath() async {
     if (_isWeb) {
       return 'musica_eventi_e_documenti.db (web)';
@@ -407,7 +576,6 @@ class DatabaseService {
     return join(appDocDir.path, 'musica_eventi_e_documenti.db');
   }
 
-  // ✅ OTTIENI LA DIRECTORY DEI BACKUP
   Future<String> getBackupDirectory() async {
     final appDocDir = await getApplicationDocumentsDirectory();
     final backupDir = Directory(join(appDocDir.path, 'backup'));
@@ -420,7 +588,6 @@ class DatabaseService {
     return backupDir.path;
   }
 
-  // ✅ CREA BACKUP DEL DATABASE CORRENTE
   Future<String> createBackup() async {
     try {
       final currentPath = await getDatabasePath();
@@ -449,7 +616,6 @@ class DatabaseService {
     }
   }
 
-  // ✅ LISTA DEI BACKUP DISPONIBILI
   Future<List<FileSystemEntity>> listBackups() async {
     try {
       final backupDirPath = await getBackupDirectory();
@@ -465,7 +631,6 @@ class DatabaseService {
     }
   }
 
-  // ✅ RIPRISTINA DA BACKUP
   Future<void> restoreFromBackup(String backupPath) async {
     try {
       final currentPath = await getDatabasePath();
@@ -486,6 +651,8 @@ class DatabaseService {
       _database = await openDatabase(
         currentPath,
         version: DB_VERSION,
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
         onOpen: (db) {
           print('✅ Database riaperto dopo ripristino');
         },
@@ -497,7 +664,6 @@ class DatabaseService {
     }
   }
 
-  // ✅ ESPORTA DATABASE
   Future<void> exportDatabase(String exportPath) async {
     final currentPath = await getDatabasePath();
     final file = File(currentPath);
@@ -507,6 +673,50 @@ class DatabaseService {
     } else {
       throw Exception('Database non trovato');
     }
+  }
+
+  // ========== METODI PER LE VISTE ==========
+
+  /// Ottiene tutti i documenti di un evento con dettagli (usa la vista)
+  Future<List<Map<String, dynamic>>> getEventDocumentsWithDetails(String eventId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT * FROM v_event_documents
+      WHERE event_id = ?
+      ORDER BY song_order ASC, document_order ASC
+    ''', [eventId]);
+    return result;
+  }
+
+  /// Ottiene il riepilogo dei documenti per evento
+  Future<List<Map<String, dynamic>>> getEventDocumentsSummary(String eventId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT * FROM v_event_documents_summary
+      WHERE event_id = ?
+      ORDER BY song_order ASC
+    ''', [eventId]);
+    return result;
+  }
+
+  /// Ottiene tutti i documenti di un evento (raggruppati per brano)
+  Future<Map<String, List<Map<String, dynamic>>>> getEventDocumentsGrouped(String eventId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT * FROM v_event_documents
+      WHERE event_id = ?
+      ORDER BY song_order ASC, document_order ASC
+    ''', [eventId]);
+
+    final Map<String, List<Map<String, dynamic>>> grouped = {};
+    for (var row in result) {
+      final songId = row['song_id'] as String;
+      if (!grouped.containsKey(songId)) {
+        grouped[songId] = [];
+      }
+      grouped[songId]!.add(row);
+    }
+    return grouped;
   }
 
   // ========== METODI EVENTI ==========
@@ -590,7 +800,6 @@ class DatabaseService {
     });
   }
 
-
   Future<void> insertSong(Song song) async {
     final db = await database;
     await db.insert('songs', song.toMap());
@@ -622,12 +831,12 @@ class DatabaseService {
     );
     print('🗑️ Brano eliminato: $id');
   }
-  // ========== METODI SONG EVENTI  ==========
-// ✅ ASSOCIA UNA CANZONE A UN EVENTO
+
+  // ========== METODI SONG EVENTI ==========
+
   Future<void> addSongToEvent(String eventId, String songId, {int orderIndex = 0}) async {
     final db = await database;
 
-    // Verifica se esiste già
     final existing = await db.query(
       'event_songs',
       where: 'event_id = ? AND song_id = ?',
@@ -651,7 +860,6 @@ class DatabaseService {
     print('✅ Canzone associata all\'evento: $songId → $eventId');
   }
 
-// ✅ RIMUOVE UNA CANZONE DA UN EVENTO
   Future<void> removeSongFromEvent(String eventId, String songId) async {
     final db = await database;
     await db.delete(
@@ -662,7 +870,6 @@ class DatabaseService {
     print('🗑️ Canzone rimossa dall\'evento');
   }
 
-// ✅ OTTIENI LE CANZONI ASSOCIATE A UN EVENTO
   Future<List<Song>> getSongsByEvent(String eventId) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.rawQuery('''
@@ -678,7 +885,6 @@ class DatabaseService {
     });
   }
 
-// ✅ OTTIENI GLI EVENTI ASSOCIATI A UNA CANZONE
   Future<List<Event>> getEventsBySong(String songId) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.rawQuery('''
@@ -693,7 +899,7 @@ class DatabaseService {
       return Event.fromMap(maps[i]);
     });
   }
-// ✅ AGGIORNA L'ORDINE DI UNA CANZONE IN UN EVENTO
+
   Future<void> updateSongOrder(String eventId, String songId, int orderIndex) async {
     final db = await database;
     await db.update(
@@ -703,6 +909,7 @@ class DatabaseService {
       whereArgs: [eventId, songId],
     );
   }
+
   Future<Song?> getSongById(String id) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(
@@ -715,8 +922,9 @@ class DatabaseService {
     }
     return null;
   }
-  // ========== METODI ISCRIZIONE AGLI EVENTI  ==========
-  // ✅ OTTIENI LE ISCRIZIONI PER EVENTO
+
+  // ========== METODI ISCRIZIONE ==========
+
   Future<List<Registration>> getRegistrationsByEvent(String eventId) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(
@@ -729,7 +937,6 @@ class DatabaseService {
     });
   }
 
-  /// Ottiene il conteggio dei documenti per ogni brano
   Future<Map<String, int>> getDocumentsCountBySong() async {
     final db = await database;
     final List<Map<String, dynamic>> result = await db.rawQuery('''
@@ -746,14 +953,11 @@ class DatabaseService {
     }
     return countMap;
   }
-  // ✅ OTTIENI GLI STRUMENTI PER BRANO IN UN EVENTO
+
   Future<Map<String, List<String>>> getInstrumentsBySongForEvent(String eventId) async {
     final db = await database;
-
-    // Ottieni tutte le registrazioni per l'evento
     final registrations = await getRegistrationsByEvent(eventId);
 
-    // Mappa: songId -> lista di strumenti
     final Map<String, List<String>> result = {};
 
     for (var reg in registrations) {
@@ -773,11 +977,9 @@ class DatabaseService {
     return result;
   }
 
-// ✅ OTTIENI IL CONTEO DEGLI ISCRITTI PER BRANO IN UN EVENTO
   Future<Map<String, int>> getRegistrationsCountBySongForEvent(String eventId) async {
     final db = await database;
 
-    // Ottieni tutte le registrazioni confermate per l'evento
     final registrations = await db.query(
       'registrations',
       where: 'event_id = ? AND status = ?',
@@ -799,13 +1001,7 @@ class DatabaseService {
     return result;
   }
 
-// lib/services/database_service.dart - Sezione METODI DOCUMENTI
-
-// ========== METODI DOCUMENTI ==========
-
-// ========== METODI DOCUMENTI ==========
-
-// ✅ OTTIENI TUTTI I DOCUMENTI
+  // ========== METODI DOCUMENTI ==========
 
   Future<List<Document>> getAllDocuments() async {
     final db = await database;
@@ -815,7 +1011,6 @@ class DatabaseService {
     });
   }
 
-// ✅ OTTIENI DOCUMENTO PER ID
   Future<Document?> getDocumentById(String id) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(
@@ -829,14 +1024,12 @@ class DatabaseService {
     return null;
   }
 
-// ✅ INSERISCI DOCUMENTO
   Future<void> insertDocument(Document document) async {
     final db = await database;
     await db.insert('documents', document.toMap());
     print('✅ Documento inserito: ${document.fileName}');
   }
 
-// ✅ AGGIORNA DOCUMENTO
   Future<void> updateDocument(Document document) async {
     final db = await database;
     await db.update(
@@ -848,7 +1041,6 @@ class DatabaseService {
     print('✅ Documento aggiornato: ${document.fileName}');
   }
 
-// ✅ ELIMINA DOCUMENTO (cancella anche le relazioni)
   Future<void> deleteDocument(String id) async {
     final db = await database;
     await db.delete(
@@ -864,9 +1056,8 @@ class DatabaseService {
     print('🗑️ Documento eliminato: $id');
   }
 
-// ========== METODI RELAZIONE DOCUMENTO-BRANO ==========
+  // ========== METODI RELAZIONE DOCUMENTO-BRANO ==========
 
-// ✅ ASSOCIA DOCUMENTO A BRANO
   Future<void> addDocumentToSong(String documentId, String songId, {int orderIndex = 0}) async {
     final db = await database;
     final existing = await db.query(
@@ -889,7 +1080,6 @@ class DatabaseService {
     print('✅ Documento associato al brano');
   }
 
-// ✅ RIMUOVI DOCUMENTO DA BRANO
   Future<void> removeDocumentFromSong(String documentId, String songId) async {
     final db = await database;
     await db.delete(
@@ -900,7 +1090,6 @@ class DatabaseService {
     print('🗑️ Documento rimosso dal brano');
   }
 
-// ✅ OTTIENI DOCUMENTI PER BRANO
   Future<List<Document>> getDocumentsBySong(String songId) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.rawQuery('''
@@ -915,7 +1104,6 @@ class DatabaseService {
     });
   }
 
-// ✅ OTTIENI DOCUMENTI PER TIPO
   Future<List<Document>> getDocumentsByType(String docType) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(
@@ -928,6 +1116,138 @@ class DatabaseService {
       return Document.fromMap(maps[i]);
     });
   }
+
+  // ========== METODI EVENT_SONG_DOCUMENTS (NUOVI) ==========
+
+  /// Ottiene l'event_song_id per un evento e un brano
+  Future<String?> getEventSongId(String eventId, String songId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.query(
+      'event_songs',
+      where: 'event_id = ? AND song_id = ?',
+      whereArgs: [eventId, songId],
+      limit: 1,
+    );
+    if (result.isEmpty) return null;
+    return result.first['id'] as String;
+  }
+
+  /// Ottiene i documenti specifici per un evento-brano
+  Future<List<EventSongDocument>> getDocumentsForEventSong(String eventSongId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'event_song_documents',
+      where: 'event_song_id = ?',
+      whereArgs: [eventSongId],
+      orderBy: 'order_index ASC',
+    );
+    return List.generate(maps.length, (i) {
+      return EventSongDocument.fromMap(maps[i]);
+    });
+  }
+
+  /// Aggiunge un documento a un evento-brano
+  Future<void> addDocumentToEventSong(String eventSongId, String documentId, {int orderIndex = 0, String? notes}) async {
+    final db = await database;
+    final id = generateId();
+    await db.insert(
+      'event_song_documents',
+      {
+        'id': id,
+        'event_song_id': eventSongId,
+        'document_id': documentId,
+        'order_index': orderIndex,
+        'notes': notes,
+        'created_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    print('✅ Documento aggiunto a evento-brano');
+  }
+
+  /// Rimuove un documento da un evento-brano
+  Future<void> removeDocumentFromEventSong(String eventSongId, String documentId) async {
+    final db = await database;
+    await db.delete(
+      'event_song_documents',
+      where: 'event_song_id = ? AND document_id = ?',
+      whereArgs: [eventSongId, documentId],
+    );
+    print('🗑️ Documento rimosso da evento-brano');
+  }
+
+  /// Ottiene i documenti di un evento-brano con i dettagli del documento
+  Future<List<Map<String, dynamic>>> getEventSongDocumentsWithDetails(String eventSongId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT 
+        esd.*,
+        d.id as document_id,
+        d.file_name,
+        d.doc_type,
+        d.file_path,
+        d.file_size,
+        d.description,
+        d.is_public
+      FROM event_song_documents esd
+      LEFT JOIN documents d ON esd.document_id = d.id
+      WHERE esd.event_song_id = ?
+      ORDER BY esd.order_index ASC
+    ''', [eventSongId]);
+
+    return result;
+  }
+
+  /// Ottiene tutti i documenti di un evento (raggruppati per brano) - usa la vista
+  Future<Map<String, List<Map<String, dynamic>>>> getDocumentsByEvent(String eventId) async {
+    return getEventDocumentsGrouped(eventId);
+  }
+
+  /// Ottiene i documenti di un evento per un brano specifico
+  Future<List<Map<String, dynamic>>> getDocumentsForEventAndSong(String eventId, String songId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT 
+        esd.*,
+        d.id as document_id,
+        d.file_name,
+        d.doc_type,
+        d.file_path,
+        d.file_size,
+        d.description,
+        d.is_public
+      FROM event_songs es
+      LEFT JOIN event_song_documents esd ON es.id = esd.event_song_id
+      LEFT JOIN documents d ON esd.document_id = d.id
+      WHERE es.event_id = ? AND es.song_id = ?
+      ORDER BY esd.order_index ASC
+    ''', [eventId, songId]);
+
+    return result;
+  }
+
+  /// Aggiorna l'ordine di un documento in un evento-brano
+  Future<void> updateEventSongDocumentOrder(String eventSongDocumentId, int orderIndex) async {
+    final db = await database;
+    await db.update(
+      'event_song_documents',
+      {'order_index': orderIndex, 'updated_at': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [eventSongDocumentId],
+    );
+  }
+
+  /// Elimina tutti i documenti di un evento-brano
+  Future<void> clearDocumentsFromEventSong(String eventSongId) async {
+    final db = await database;
+    await db.delete(
+      'event_song_documents',
+      where: 'event_song_id = ?',
+      whereArgs: [eventSongId],
+    );
+    print('🗑️ Tutti i documenti rimossi da evento-brano');
+  }
+
   // ========== METODI REGISTRAZIONI ==========
 
   Future<List<Registration>> getAllRegistrations() async {

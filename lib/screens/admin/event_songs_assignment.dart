@@ -5,6 +5,7 @@ import '../../models/event_model.dart';
 import '../../models/song_model.dart';
 import '../../models/registration_model.dart';
 import 'song_form_screen.dart';
+import 'event_song_documents.dart';  // <-- NUOVO IMPORT
 
 class EventSongsAssignment extends StatefulWidget {
   final Event event;
@@ -202,34 +203,67 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     }
   }
 
-  Widget _buildDocumentIndicator(int count) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 6,
-        vertical: 2,
-      ),
-      decoration: BoxDecoration(
-        color: count > 0 ? Colors.blue.shade100 : Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.description,
-            size: 14,
-            color: count > 0 ? Colors.blue.shade700 : Colors.grey.shade500,
-          ),
-          const SizedBox(width: 2),
-          Text(
-            '$count',
-            style: TextStyle(
-              fontSize: 12,
-              color: count > 0 ? Colors.blue.shade700 : Colors.grey.shade500,
-              fontWeight: FontWeight.bold,
+  // ============================================
+  // INDICATORI
+  // ============================================
+
+  // NUOVO: Icona documenti CLICCABILE
+  Widget _buildDocumentIndicator(int count, Song song) {
+    return GestureDetector(
+      onTap: () async {
+        // Ottieni l'event_song_id per questo evento e brano
+        final eventSongId = await _db.getEventSongId(widget.event.id, song.id);
+        if (eventSongId != null) {
+          if (!mounted) return;
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => EventSongDocumentsScreen(
+                eventId: widget.event.id,
+                songId: song.id,
+                eventSongId: eventSongId,
+                songTitle: song.title,
+              ),
             ),
-          ),
-        ],
+          );
+        } else {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Errore: relazione evento-brano non trovata'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 6,
+          vertical: 2,
+        ),
+        decoration: BoxDecoration(
+          color: count > 0 ? Colors.blue.shade100 : Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.description,
+              size: 14,
+              color: count > 0 ? Colors.blue.shade700 : Colors.grey.shade500,
+            ),
+            const SizedBox(width: 2),
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 12,
+                color: count > 0 ? Colors.blue.shade700 : Colors.grey.shade500,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -456,7 +490,36 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                 Expanded(
                                   child: Text(song.title),
                                 ),
-                                _buildDocumentIndicator(docsCount),
+                                // Icona documenti (non cliccabile qui, solo informativa)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: docsCount > 0 ? Colors.blue.shade100 : Colors.grey.shade200,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.description,
+                                        size: 14,
+                                        color: docsCount > 0 ? Colors.blue.shade700 : Colors.grey.shade500,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        '$docsCount',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: docsCount > 0 ? Colors.blue.shade700 : Colors.grey.shade500,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
                             subtitle: song.composer != null
@@ -649,7 +712,8 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                 ),
                               ),
                             ),
-                            _buildDocumentIndicator(docsCount),
+                            // Icona documenti CLICCABILE
+                            _buildDocumentIndicator(docsCount, song),
                             const SizedBox(width: 8),
                             _buildRegistrationIndicator(count),
                             const SizedBox(width: 8),

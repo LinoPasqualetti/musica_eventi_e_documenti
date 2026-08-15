@@ -1,4 +1,6 @@
 // lib/screens/abc_viewer_screen.dart
+// Versione che usa il browser per la riproduzione (funziona su Android)
+
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
@@ -55,21 +57,16 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     String meter = '';
     String key = '';
 
+    int tuneCount = 0;
     for (var line in lines) {
+      if (line.startsWith('X:')) tuneCount++;
       if (line.startsWith('T:')) title = line.substring(2).trim();
       if (line.startsWith('C:')) composer = line.substring(2).trim();
       if (line.startsWith('M:')) meter = line.substring(2).trim();
       if (line.startsWith('K:')) key = line.substring(2).trim();
     }
 
-    return '''
-Titolo: $title
-Compositore: $composer
-Metro: $meter
-Tonalità: $key
-Righe: ${lines.length}
-Caratteri: ${_abcContent.length}
-''';
+    return 'Titolo: $title\nCompositore: $composer\nMetro: $meter\nTonalità: $key\nBrani totali: $tuneCount\nRighe: ${lines.length}';
   }
 
   String _buildHtmlContent() {
@@ -83,278 +80,303 @@ Caratteri: ${_abcContent.length}
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ABC Viewer</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/abcjs@6.0.0/dist/abcjs-basic.css">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #f5f5f5;
-      padding: 16px;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    #container {
-      max-width: 900px;
-      width: 100%;
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    #title {
-      font-size: 24px;
-      font-weight: bold;
-      margin-bottom: 16px;
-      color: #333;
-      text-align: center;
-    }
-    #abc-container {
-      padding: 16px;
-      background: #fafafa;
-      border-radius: 8px;
-      border: 1px solid #e0e0e0;
-      min-height: 200px;
-      overflow: auto;
-    }
-    #abc-container svg { max-width: 100%; height: auto; }
-    #controls {
-      margin-top: 16px;
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-    .btn {
-      padding: 10px 20px;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .btn-primary { background: #673ab7; color: white; }
-    .btn-primary:hover { background: #7c4dff; transform: scale(1.02); }
-    .btn-secondary { background: #e0e0e0; color: #333; }
-    .btn-secondary:hover { background: #d0d0d0; }
-    .btn-success { background: #4caf50; color: white; }
-    .btn-success:hover { background: #66bb6a; }
-    .btn-danger { background: #dc3545; color: white; }
-    .btn-danger:hover { background: #c82333; }
-    #error {
-      color: #d32f2f;
-      padding: 16px;
-      background: #ffebee;
-      border-radius: 8px;
-      text-align: center;
-      margin-top: 16px;
-    }
-    #abc-source {
-      margin-top: 16px;
-      padding: 12px;
-      background: #263238;
-      color: #aed581;
-      border-radius: 8px;
-      font-family: monospace;
-      font-size: 12px;
-      max-height: 200px;
-      overflow: auto;
-      display: none;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-    }
-    #playback-status {
-      margin-top: 16px;
-      padding: 12px;
-      background: #f5f5f5;
-      border-radius: 8px;
-      text-align: center;
-      font-weight: 500;
-    }
-    @media (max-width: 600px) {
-      #container { padding: 12px; }
-      #title { font-size: 18px; }
-      .btn { padding: 8px 16px; font-size: 12px; }
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ABC Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/abcjs@6.0.0/dist/abcjs-basic-min.js">
+    </script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 16px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #container {
+            max-width: 1000px;
+            width: 100%;
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        #title { font-size: 24px; font-weight: bold; margin-bottom: 16px; color: #333; text-align: center; }
+        #abc-container { padding: 16px; background: #fafafa; border-radius: 8px; border: 1px solid #e0e0e0; min-height: 200px; overflow: auto; }
+        #abc-container svg { max-width: 100%; height: auto; }
+        #controls { margin-top: 16px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .btn-play { background: #4caf50; color: white; }
+        .btn-play:hover { background: #66bb6a; transform: scale(1.02); }
+        .btn-play.playing { background: #ff9800; }
+        .btn-stop { background: #f44336; color: white; }
+        .btn-stop:hover { background: #ef5350; transform: scale(1.02); }
+        .btn-pdf { background: #2196f3; color: white; }
+        .btn-pdf:hover { background: #42a5f5; transform: scale(1.02); }
+        #status { margin-top: 12px; padding: 8px; text-align: center; font-size: 14px; color: #666; }
+        #error { color: #d32f2f; padding: 12px; background: #ffebee; border-radius: 8px; text-align: center; margin-top: 8px; display: none; }
+        .tune-selector { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+        .tune-btn { padding: 4px 12px; border: 2px solid #673ab7; border-radius: 16px; background: transparent; color: #673ab7; cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.2s; }
+        .tune-btn.active { background: #673ab7; color: white; }
+        .tune-btn:hover { background: #7c4dff; color: white; }
+        .midi-warning {
+            margin-top: 8px;
+            padding: 8px;
+            background: #fff3cd;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #856404;
+            text-align: center;
+        }
+    </style>
 </head>
 <body>
-  <div id="container">
-    <div id="title">🎵 ${widget.fileName}</div>
-    <div id="abc-container"></div>
-    <div id="controls">
-      <button class="btn btn-primary" onclick="playABC()">▶ Play</button>
-      <button class="btn btn-danger" onclick="stopABC()">⏹ Stop</button>
-      <button class="btn btn-success" onclick="exportPDF()">📄 Esporta PDF</button>
-      <button class="btn btn-secondary" onclick="toggleSource()">📋 Mostra ABC</button>
+    <div id="container">
+        <div id="title">🎵 ${widget.fileName}</div>
+        <div id="tune-selector" class="tune-selector"></div>
+        <div id="abc-container"></div>
+        <div id="controls">
+            <button class="btn btn-play" id="playBtn" onclick="playABC()">▶ Play</button>
+            <button class="btn btn-stop" onclick="stopABC()">⏹ Stop</button>
+            <button class="btn btn-pdf" onclick="exportPDF()">📄 PDF</button>
+        </div>
+        <div id="status">⏸ In attesa</div>
+        <div id="error"></div>
+        <div class="midi-warning">💡 Clicca Play per ascoltare</div>
     </div>
-    <div id="abc-source"></div>
-    <div id="error" style="display:none;"></div>
-    <div id="playback-status">⏸ In attesa</div>
-  </div>
-  
-  <script src="https://cdn.jsdelivr.net/npm/abcjs@6.0.0/dist/abcjs-basic-min.js"></script>
-  <script>
-    var abcString = `$escapedAbc`;
-    var visualObj = null;
-    var isPlaying = false;
-    var audioElement = null;
-    var currentUrl = null;
-    
-    function showError(msg) {
-      var errorDiv = document.getElementById('error');
-      errorDiv.style.display = 'block';
-      errorDiv.innerText = msg;
-    }
-    
-    function hideError() {
-      document.getElementById('error').style.display = 'none';
-    }
-    
-    function updateStatus(text, color) {
-      var status = document.getElementById('playback-status');
-      status.innerText = text;
-      if (color) status.style.color = color;
-    }
-    
-    if (!abcString || abcString.trim() === '') {
-      showError('⚠️ Contenuto ABC vuoto o non valido');
-    } else {
-      try {
-        hideError();
-        visualObj = ABCJS.renderAbc('abc-container', abcString, {
-          responsive: 'resize',
-          staffwidth: 700,
-          scale: 1.0,
-          paddingtop: 10,
-          paddingbottom: 10,
-          add_classes: true,
-          generateParts: true,
-          generatePartNames: true,
-          generatePlayback: true,
-        });
-        
-        if (!visualObj || visualObj.length === 0) {
-          showError('⚠️ Errore: ABC non valido o non renderizzabile');
-        } else {
-          updateStatus('✅ Spartito caricato', '#4caf50');
-          
-          // Crea l'elemento audio per il MIDI
-          try {
-            audioElement = new Audio();
-            audioElement.controls = false;
-            audioElement.style.display = 'none';
-            document.body.appendChild(audioElement);
-          } catch(e) {
-            console.warn('Audio non disponibile:', e);
-          }
+    <script>
+        var abcString = `$escapedAbc`;
+        var visualObj = null;
+        var isPlaying = false;
+        var currentTuneIndex = 0;
+        var tunes = [];
+        var tuneTitles = [];
+        var audioElement = null;
+        var midiUrl = null;
+
+        function showError(msg) {
+            var errorDiv = document.getElementById('error');
+            errorDiv.style.display = 'block';
+            errorDiv.innerText = '❌ ' + msg;
         }
-      } catch(e) {
-        showError('❌ Errore render: ' + e.message);
-        console.error('ABC render error:', e);
-      }
-    }
-    
-    function playABC() {
-      if (!visualObj || visualObj.length === 0) {
-        alert('Nessuna musica da suonare');
-        return;
-      }
-      
-      if (isPlaying) {
-        stopABC();
-        return;
-      }
-      
-      try {
-        // Metodo: usa ABCJS.getMidi per generare il MIDI
-        var midiContent = ABCJS.getMidi(abcString);
-        if (!midiContent) {
-          alert('Impossibile generare il MIDI da questo ABC');
-          return;
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
         }
-        
-        // Converti i dati MIDI in un blob
-        var midiData = midiContent;
-        var blob = new Blob([midiData], {type: 'audio/midi'});
-        var url = URL.createObjectURL(blob);
-        currentUrl = url;
-        
-        if (audioElement) {
-          audioElement.src = url;
-          audioElement.play();
-          isPlaying = true;
-          updateStatus('▶ Riproduzione...', '#4caf50');
-          
-          audioElement.onended = function() {
-            stopABC();
-          };
-          
-          audioElement.onerror = function() {
-            // Se il MIDI non funziona, prova con la versione web di abcjs
-            alert('Errore: il browser potrebbe non supportare la riproduzione MIDI.\nProva a usare un visualizzatore online.');
-            stopABC();
-          };
-        } else {
-          alert('Player audio non disponibile');
+
+        function updateStatus(text, color) {
+            var status = document.getElementById('status');
+            status.innerText = text;
+            if (color) status.style.color = color;
         }
-      } catch(e) {
-        console.error('Errore riproduzione:', e);
-        alert('Errore nella riproduzione: ' + e.message);
-      }
-    }
-    
-    function stopABC() {
-      try {
-        if (audioElement) {
-          audioElement.pause();
-          audioElement.currentTime = 0;
+
+        function extractTunes(fullAbc) {
+            var lines = fullAbc.split('\\n');
+            var result = [], titles = [], current = [], currentTitle = '', inTune = false;
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.trim().startsWith('X:')) {
+                    if (inTune && current.length > 0) {
+                        result.push(current.join('\\n'));
+                        titles.push(currentTitle || 'Brano ' + result.length);
+                    }
+                    current = [];
+                    currentTitle = '';
+                    inTune = true;
+                }
+                if (inTune) {
+                    if (line.trim().startsWith('T:') && !currentTitle) {
+                        currentTitle = line.trim().substring(2).trim();
+                    }
+                    current.push(line);
+                }
+            }
+            if (inTune && current.length > 0) {
+                result.push(current.join('\\n'));
+                titles.push(currentTitle || 'Brano ' + result.length);
+            }
+            return { tunes: result, titles: titles };
         }
-        if (currentUrl) {
-          URL.revokeObjectURL(currentUrl);
-          currentUrl = null;
+
+        function renderTune(tuneContent, index) {
+            try {
+                hideError();
+                document.getElementById('abc-container').innerHTML = '';
+
+                visualObj = ABCJS.renderAbc('abc-container', tuneContent, {
+                    responsive: 'resize',
+                    staffwidth: 700,
+                    scale: 1.0,
+                    paddingtop: 10,
+                    paddingbottom: 10,
+                    add_classes: true,
+                    generateParts: true,
+                    generatePartNames: true,
+                    generatePlayback: true,
+                });
+
+                if (!visualObj || visualObj.length === 0) {
+                    showError('Errore: ABC non valido');
+                    updateStatus('❌ Errore', '#d32f2f');
+                } else {
+                    var title = tuneTitles[index] || 'Brano ' + (index + 1);
+                    document.getElementById('title').innerText = '🎵 ' + title;
+                    updateStatus('✅ Spartito caricato', '#4caf50');
+                }
+            } catch (e) {
+                showError('Errore render: ' + e.message);
+                console.error('ABC render error:', e);
+            }
         }
-        isPlaying = false;
-        updateStatus('⏸ Fermo', '#333');
-      } catch(e) {
-        console.log('Stop error:', e);
-      }
-    }
-    
-    function exportPDF() {
-      window.print();
-    }
-    
-    function toggleSource() {
-      var sourceDiv = document.getElementById('abc-source');
-      if (sourceDiv.style.display === 'block') {
-        sourceDiv.style.display = 'none';
-      } else {
-        sourceDiv.style.display = 'block';
-        sourceDiv.innerText = abcString;
-      }
-    }
-    
-    window.addEventListener('resize', function() {
-      if (visualObj) {
-        ABCJS.renderAbc('abc-container', abcString, {
-          responsive: 'resize',
-          staffwidth: Math.min(700, window.innerWidth - 80),
-          scale: 1.0,
-          paddingtop: 10,
-          paddingbottom: 10,
-        });
-      }
-    });
-    
-    console.log('🎵 ABC Viewer loaded');
-    console.log('ABC length:', abcString.length);
-  </script>
+
+        function initTuneSelector() {
+            var selector = document.getElementById('tune-selector');
+            selector.innerHTML = '';
+            if (tunes.length <= 1) { selector.style.display = 'none'; return; }
+            selector.style.display = 'flex';
+            for (var i = 0; i < tunes.length; i++) {
+                var btn = document.createElement('button');
+                btn.className = 'tune-btn' + (i === 0 ? ' active' : '');
+                var title = tuneTitles[i] || 'Brano ' + (i + 1);
+                btn.textContent = title.length > 25 ? title.substring(0, 22) + '...' : title;
+                btn.setAttribute('data-index', i);
+                btn.onclick = function(e) {
+                    var idx = parseInt(this.getAttribute('data-index'));
+                    var btns = document.querySelectorAll('.tune-btn');
+                    btns.forEach(function(b) { b.classList.remove('active'); });
+                    this.classList.add('active');
+                    currentTuneIndex = idx;
+                    stopPlayback();
+                    renderTune(tunes[idx], idx);
+                };
+                selector.appendChild(btn);
+            }
+        }
+
+        function generateMidiFromAbc(abcContent) {
+            try {
+                // Usa ABCJS.getMidi
+                if (typeof ABCJS.getMidi === 'function') {
+                    return ABCJS.getMidi(abcContent);
+                }
+                
+                // Fallback: crea MIDI con renderAbc
+                var tempDiv = document.createElement('div');
+                tempDiv.style.display = 'none';
+                document.body.appendChild(tempDiv);
+                var tempVisual = ABCJS.renderAbc(tempDiv.id, abcContent, {
+                    generatePlayback: true
+                });
+                document.body.removeChild(tempDiv);
+                
+                if (tempVisual && tempVisual.length > 0 && tempVisual[0].getMidi) {
+                    return tempVisual[0].getMidi();
+                }
+                return null;
+            } catch (e) {
+                console.error('Errore generazione MIDI:', e);
+                return null;
+            }
+        }
+
+        function playABC() {
+            if (isPlaying) { stopABC(); return; }
+            if (!visualObj || visualObj.length === 0) { alert('Nessuna musica da suonare'); return; }
+
+            var playBtn = document.getElementById('playBtn');
+            var currentTune = tunes[currentTuneIndex] || abcString;
+
+            try {
+                var midiData = generateMidiFromAbc(currentTune);
+                if (!midiData) {
+                    alert('Impossibile generare il MIDI');
+                    return;
+                }
+
+                var blob = new Blob([midiData], {type: 'audio/midi'});
+                var url = URL.createObjectURL(blob);
+                midiUrl = url;
+
+                if (!audioElement) {
+                    audioElement = new Audio();
+                    audioElement.controls = false;
+                    audioElement.style.display = 'none';
+                    document.body.appendChild(audioElement);
+                }
+
+                audioElement.src = url;
+                audioElement.play()
+                    .then(function() {
+                        isPlaying = true;
+                        playBtn.textContent = '⏸ Pausa';
+                        playBtn.classList.add('playing');
+                        updateStatus('▶ Riproduzione...', '#4caf50');
+                    })
+                    .catch(function(error) {
+                        console.error('Errore play:', error);
+                        alert('Errore riproduzione: ' + error.message);
+                        isPlaying = false;
+                        playBtn.textContent = '▶ Play';
+                        playBtn.classList.remove('playing');
+                    });
+
+                audioElement.onended = function() { stopABC(); };
+
+            } catch (e) {
+                console.error('Errore:', e);
+                alert('Errore: ' + e.message);
+            }
+        }
+
+        function stopABC() {
+            try {
+                if (audioElement) {
+                    audioElement.pause();
+                    audioElement.currentTime = 0;
+                }
+                if (midiUrl) {
+                    URL.revokeObjectURL(midiUrl);
+                    midiUrl = null;
+                }
+            } catch (e) {}
+            isPlaying = false;
+            document.getElementById('playBtn').textContent = '▶ Play';
+            document.getElementById('playBtn').classList.remove('playing');
+            updateStatus('⏸ Fermo', '#333');
+        }
+
+        function exportPDF() { window.print(); }
+
+        function init() {
+            if (!abcString || abcString.trim() === '') {
+                showError('Contenuto ABC vuoto');
+                return;
+            }
+
+            try {
+                var extracted = extractTunes(abcString);
+                tunes = extracted.tunes;
+                tuneTitles = extracted.titles;
+
+                if (tunes.length === 0) {
+                    showError('Nessun brano trovato');
+                    return;
+                }
+
+                initTuneSelector();
+                renderTune(tunes[0], 0);
+            } catch (e) {
+                showError('Errore: ' + e.message);
+                console.error('Init error:', e);
+            }
+        }
+
+        init();
+        console.log('🎵 ABC Viewer loaded');
+    </script>
 </body>
 </html>
     ''';
@@ -368,7 +390,6 @@ Caratteri: ${_abcContent.length}
       await file.writeAsString(htmlContent, flush: true);
 
       final url = file.path;
-      print('📂 Apertura in browser: $url');
 
       if (await canLaunchUrl(Uri.file(url))) {
         await launchUrl(Uri.file(url), mode: LaunchMode.externalApplication);
@@ -436,16 +457,9 @@ Caratteri: ${_abcContent.length}
               children: [
                 const Icon(Icons.error_outline, size: 64, color: Colors.red),
                 const SizedBox(height: 16),
-                const Text(
-                  'Errore',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+                const Text('Errore', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                Text(
-                  _error,
-                  style: TextStyle(color: Colors.grey.shade600),
-                  textAlign: TextAlign.center,
-                ),
+                Text(_error, style: TextStyle(color: Colors.grey.shade600), textAlign: TextAlign.center),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
                   onPressed: () => Navigator.pop(context),
@@ -505,6 +519,7 @@ Caratteri: ${_abcContent.length}
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Info file
             Container(
@@ -526,22 +541,6 @@ Caratteri: ${_abcContent.length}
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 12),
-
-            // Legenda colori
-            Wrap(
-              spacing: 8,
-              runSpacing: 4,
-              children: [
-                _buildLegendItem('X:', 'Numero', Colors.blue),
-                _buildLegendItem('T:', 'Titolo', Colors.green),
-                _buildLegendItem('C:', 'Compositore', Colors.orange),
-                _buildLegendItem('M:', 'Metro', Colors.purple),
-                _buildLegendItem('K:', 'Tonalità', Colors.red),
-                _buildLegendItem('|', 'Battuta', Colors.grey),
-                _buildLegendItem('%%', 'Commento', Colors.grey.shade400),
-              ],
             ),
             const SizedBox(height: 12),
 
@@ -594,7 +593,7 @@ Caratteri: ${_abcContent.length}
             ),
             const SizedBox(height: 8),
             Text(
-              '💡 Clicca "Apri Spartito" per vedere le note e ascoltare la musica',
+              '💡 Clicca "Apri Spartito" per vedere lo spartito e ascoltare la musica',
               style: TextStyle(
                 fontSize: 11,
                 color: Colors.grey.shade500,
@@ -602,25 +601,6 @@ Caratteri: ${_abcContent.length}
               textAlign: TextAlign.center,
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLegendItem(String key, String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(
-        '$key $label',
-        style: TextStyle(
-          fontSize: 10,
-          color: color,
-          fontWeight: FontWeight.w500,
         ),
       ),
     );

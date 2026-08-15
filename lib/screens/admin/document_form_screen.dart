@@ -64,27 +64,43 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
 
   Future<void> _pickFile() async {
     try {
-      final result = await FilePicker.pickFiles(
+      final dynamic result = await FilePicker.pickFiles(
         allowMultiple: false,
         type: FileType.custom,
         allowedExtensions: _getAllowedExtensions(),
       );
 
-      if (result != null && result.files.isNotEmpty) {
-        final file = result.files.first;
-        setState(() {
-          _selectedFilePath = file.path;
-          _fileName = file.name;
-          _fileSize = file.size;
-          if (_titleController.text.isEmpty) {
-            _titleController.text = file.name;
-          }
-          // Auto-detect type from extension
-          if (_selectedType == null || _selectedType!.isEmpty) {
-            final extension = file.name.split('.').last.toLowerCase();
-            _selectedType = _getTypeFromExtension(extension);
-          }
-        });
+      // Approccio più semplice: controlla se result ha una proprietà 'files'
+      dynamic file;
+      if (result != null) {
+        if (result is List && result.isNotEmpty) {
+          file = result.first;
+        } else if (result.files != null && result.files.isNotEmpty) {
+          file = result.files.first;
+        } else {
+          file = result;
+        }
+      }
+
+      if (file != null) {
+        final String? path = file.path;
+        final String? name = file.name;
+        final int size = file.size ?? 0;
+
+        if (path != null && name != null) {
+          setState(() {
+            _selectedFilePath = path;
+            _fileName = name;
+            _fileSize = size;
+            if (_titleController.text.isEmpty) {
+              _titleController.text = name;
+            }
+            if (_selectedType == null || _selectedType!.isEmpty) {
+              final extension = name.split('.').last.toLowerCase();
+              _selectedType = _getTypeFromExtension(extension);
+            }
+          });
+        }
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(

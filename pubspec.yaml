@@ -4,89 +4,84 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+    sdk: '>=3.0.0 <4.0.0'  # ✅ Compatibile con Dart 3.10.7
 
 dependencies:
-  flutter:
-    sdk: flutter
+    flutter:
+        sdk: flutter
 
-  # ============================================
-  # DATABASE SQLite
-  # ============================================
-  sqflite: ^2.3.0
-  sqflite_common_ffi: ^2.3.0
-  sqflite_common_ffi_web: ^1.1.0
-  midi: ^0.1.1
-  path_provider: ^2.1.0
-  webview_flutter: ^4.10.0
-  #webview_flutter_windows: any
-  path: ^1.9.0
+    # ============================================
+    # DATABASE SQLite
+    # ============================================
+    sqflite: ^2.3.3+1
+    sqflite_common_ffi: ^2.3.3+1
+    sqflite_common_ffi_web: ^1.1.0
+    path_provider: ^2.1.3
+    path: ^1.9.0
 
-  # ============================================
-  # AUTENTICAZIONE E SICUREZZA
-  # ============================================
-  crypto: ^3.0.3
+    # ============================================
+    # AUTENTICAZIONE E SICUREZZA
+    # ============================================
+    crypto: ^3.0.3
 
-  # ============================================
-  # UI E UTILITÀ
-  # ============================================
-  cupertino_icons: ^1.0.6
-  intl: ^0.20.3
-  share_plus: ^13.3.0
-  image_picker: ^1.0.4
-  file_picker: ^12.0.0  # Aggiornato
-  flutter_local_notifications: ^22.3.0
-  url_launcher: ^6.3.2
-  connectivity_plus: ^7.3.1
-  open_file: ^3.4.0
-  #flutter_midi: ^1.1.0
-  # ============================================
-  # AUDIO E SPARTITI
-  # ============================================
-  audioplayers: ^6.7.1
-  pdf: ^3.10.0
-  printing: ^5.11.0
+    # ============================================
+    # UI E UTILITÀ
+    # ============================================
+    cupertino_icons: ^1.0.6
+    intl: ^0.19.0
+    share_plus: ^10.1.4
+    image_picker: ^1.1.2
+    file_picker: ^8.3.7
+    flutter_local_notifications: ^18.0.1
+    url_launcher: ^6.3.1
+    connectivity_plus: ^6.1.3
+    # open_file: ^3.5.10
+    open_filex: ^4.3.4
 
-  # ============================================
-  # GESTIONE FILE MXL (MusicXML Compresso)
-  # ============================================
-  archive: ^4.0.9
-  xml: ^6.3.0
+    # ============================================
+    # AUDIO E SPARTITI
+    # ============================================
+    audioplayers: ^6.4.0
+    pdf: ^3.11.3
+    printing: ^5.13.4
+    qr: ^3.0.2
 
-  # ============================================
-  # VISUALIZZAZIONE DOCUMENTI ABC e MXL
-  # ============================================
-  #webview_flutter: ^4.10.0
-  # webview_flutter_windows: ^0.4.0  # <-- AGGIUNTO PER WINDOWS
-  flutter_inappwebview: ^6.0.0  # Sostituisce webview_flutter
-  http: ^1.2.2
+    # ============================================
+    # GESTIONE FILE MXL (MusicXML compresso)
+    # ============================================
+    archive: ^4.0.7
+    xml: ^6.5.0
+    http: ^1.2.2
 
-  # ============================================
-  # STATO E NAVIGAZIONE
-  # ============================================
-  provider: ^6.0.5
-  flutter_riverpod: ^3.3.2
+    # ============================================
+    # VISUALIZZAZIONE DOCUMENTI ABC e MXL
+    # (spartito-viewer.html in InAppWebView)
+    # ============================================
+    flutter_inappwebview: ^6.1.5
 
-  # ============================================
-  # STORAGE LOCALE
-  # ============================================
-  shared_preferences: ^2.2.0
-  hive: ^2.2.3
-  hive_flutter: ^1.1.0
+    # ============================================
+    # STATO E NAVIGAZIONE
+    # ============================================
+    provider: ^6.1.2
+    flutter_riverpod: ^2.6.1
+    riverpod: ^2.6.1
+
+    # ============================================
+    # STORAGE LOCALE
+    # ============================================
+    shared_preferences: ^2.3.5
 
 dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^6.0.0
-  hive_generator: ^2.0.1
-  build_runner: ^2.4.4
+    flutter_test:
+        sdk: flutter
+    flutter_lints: ^5.0.0
 
 flutter:
-  uses-material-design: true
+    uses-material-design: true
 
-  assets:
-    - assets/images/
-    - assets/db/
-    - assets/sheets/
-    - assets/audio/
-    - assets/html/
+    assets:
+        - assets/db/
+        - assets/images/
+        - assets/sheets/
+        - assets/audio/
+        - assets/html/

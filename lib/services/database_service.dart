@@ -21,14 +21,17 @@ import '../models/user_model.dart';
 //import '../models/event_song.dart'; // RIMOSSO - ora in event_model.dart
 import 'database_migration.dart';
 
+// 🔥 IMPORT DEL LOGGER
+import '../utils/performance_logger.dart';
+
 class DatabaseService {
   static Database? _database;
   static bool _initialized = false;
   static bool _isWeb = kIsWeb;
   static bool _forceCopyFromAsset = false;
 
-  // Versione del database - AUMENTATA A 2 PER LA MIGRAZIONE
-  static const int DB_VERSION = 2;
+  // Versione del database - AUMENTATA A 3 PER LO STORAGE BLOB DI mxl/abc/midi/kar
+  static const int DB_VERSION = 3;
 
   DatabaseService() {
     _initDatabaseFactory();
@@ -62,6 +65,8 @@ class DatabaseService {
   }
 
   Future<Database> _initDatabase() async {
+    PerformanceLogger.start('_initDatabase');
+
     String path;
 
     if (_isWeb) {
@@ -82,7 +87,7 @@ class DatabaseService {
       print('ℹ️ Database già esistente, uso quello esistente');
     }
 
-    return await openDatabase(
+    final db = await openDatabase(
       path,
       version: DB_VERSION,
       onCreate: _onCreate,
@@ -91,6 +96,9 @@ class DatabaseService {
         print('✅ Database aperto con successo');
       },
     );
+
+    PerformanceLogger.stop('_initDatabase');
+    return db;
   }
 
   Future<bool> _shouldCopyDatabase(String path) async {
@@ -175,18 +183,94 @@ class DatabaseService {
     print('✅ Database vuoto creato (solo tabelle)');
   }
 
-  // ============================================
-  // CREAZIONE TABELLE
-  // ============================================
+  /// Dopo un aggiornamento dell'app, i documenti passati a storage_mode='blob'
+  /// hanno content=NULL sul dispositivo (i file originali non ci sono mai
+  /// stati, solo sul PC dove è stato preparato il DB). Questo metodo apre il
+  /// DB bundlato nel nuovo asset (che il processo di build ha già popolato
+  /// con lo script populate_blob_content.dart) e copia SOLO i content
+  /// mancanti nel DB locale, per id corrispondente — non tocca nient'altro
+  /// (eventi, registrazioni, brani, modifiche admin locali restano intatti).
+  Future<void> _backfillBlobContentFromAsset(Database liveDb) async {
+    if (_isWeb) return; // su web non c'è un file system locale su cui operare così
+
+    PerformanceLogger.start('_backfillBlobContentFromAsset');
+
+    String? tempAssetDbPath;
+    Database? assetDb;
+    try {
+      final rows = await liveDb.query(
+        'documents',
+        columns: ['id'],
+        where: "storage_mode = 'blob' AND content IS NULL",
+      );
+      if (rows.isEmpty) {
+        print('ℹ️ Nessun content mancante da recuperare dall\'asset');
+        PerformanceLogger.stop('_backfillBlobContentFromAsset');
+        return;
+      }
+
+      PerformanceLogger.info('Backfill BLOB', details: '${rows.length} documenti da recuperare');
+
+      final byteData = await rootBundle.load('assets/db/musica_eventi_e_documenti.db');
+      final bytes = byteData.buffer.asUint8List();
+
+      final tempDir = await getTemporaryDirectory();
+      tempAssetDbPath = join(
+        tempDir.path,
+        'asset_reference_${DateTime.now().millisecondsSinceEpoch}.db',
+      );
+      await File(tempAssetDbPath).writeAsBytes(bytes);
+
+      assetDb = await openDatabase(tempAssetDbPath, readOnly: true);
+
+      var filled = 0;
+      for (final row in rows) {
+        final id = row['id'] as String;
+        final assetRows = await assetDb.query(
+          'documents',
+          columns: ['content'],
+          where: 'id = ? AND content IS NOT NULL',
+          whereArgs: [id],
+        );
+        if (assetRows.isNotEmpty) {
+          await liveDb.update(
+            'documents',
+            {'content': assetRows.first['content']},
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+          filled++;
+        }
+      }
+      print('✅ Backfill content da asset: $filled/${rows.length} documenti recuperati');
+      PerformanceLogger.info('Backfill completato', details: '$filled/${rows.length} documenti');
+
+    } catch (e) {
+      // Non blocca l'avvio dell'app: i documenti rimasti senza content
+      // segnaleranno l'errore solo quando l'utente prova ad aprirli.
+      print('⚠️ Backfill content da asset fallito: $e');
+      PerformanceLogger.error('Backfill fallito', error: e);
+    } finally {
+      if (assetDb != null) await assetDb.close();
+      if (tempAssetDbPath != null) {
+        final f = File(tempAssetDbPath);
+        if (await f.exists()) await f.delete();
+      }
+      PerformanceLogger.stop('_backfillBlobContentFromAsset');
+    }
+  }
 
   Future<void> _onCreate(Database db, int version) async {
+    PerformanceLogger.start('_onCreate');
     print('🔄 Creazione tabelle versione $version');
     await _createTables(db);
     await _createViews(db);
     print('✅ Tabelle e viste create');
+    PerformanceLogger.stop('_onCreate');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    PerformanceLogger.start('_onUpgrade');
     print('🔄 Aggiornamento database da versione $oldVersion a $newVersion');
 
     if (oldVersion < 2) {
@@ -195,6 +279,18 @@ class DatabaseService {
       // Crea le viste dopo la migrazione
       await _createViews(db);
     }
+
+    if (oldVersion < 3) {
+      // Aggiunge storage_mode/content/mime_type a documents per mxl/abc/mid/kar
+      await DatabaseMigration.runBlobStorageMigration(db);
+      // Il DB locale già installato sul dispositivo non ha mai avuto i file
+      // originali: recupera il `content` mancante dal DB bundlato nella nuova
+      // versione dell'asset (dove lo script di popolamento lo ha già scritto),
+      // senza toccare il resto dei dati locali dell'utente.
+      await _backfillBlobContentFromAsset(db);
+    }
+
+    PerformanceLogger.stop('_onUpgrade');
   }
 
   Future<void> _createTables(Database db) async {
@@ -293,8 +389,11 @@ class DatabaseService {
         id TEXT PRIMARY KEY,
         doc_type TEXT NOT NULL,
         file_name TEXT NOT NULL,
-        file_path TEXT NOT NULL,
+        storage_mode TEXT NOT NULL DEFAULT 'filesystem',
+        content BLOB,
+        file_path TEXT,
         file_size INTEGER,
+        mime_type TEXT,
         description TEXT,
         is_public BOOLEAN DEFAULT 1,
         uploaded_by TEXT NOT NULL,
@@ -679,49 +778,74 @@ class DatabaseService {
 
   /// Ottiene tutti i documenti di un evento con dettagli (usa la vista)
   Future<List<Map<String, dynamic>>> getEventDocumentsWithDetails(String eventId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery('''
-      SELECT * FROM v_event_documents
-      WHERE event_id = ?
-      ORDER BY song_order ASC, document_order ASC
-    ''', [eventId]);
-    return result;
+    PerformanceLogger.start('getEventDocumentsWithDetails');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+        SELECT * FROM v_event_documents
+        WHERE event_id = ?
+        ORDER BY song_order ASC, document_order ASC
+      ''', [eventId]);
+      PerformanceLogger.info('Documenti evento con dettagli', details: '${result.length} documenti');
+      PerformanceLogger.stop('getEventDocumentsWithDetails');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getEventDocumentsWithDetails fallito', error: e);
+      return [];
+    }
   }
 
   /// Ottiene il riepilogo dei documenti per evento
   Future<List<Map<String, dynamic>>> getEventDocumentsSummary(String eventId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery('''
-      SELECT * FROM v_event_documents_summary
-      WHERE event_id = ?
-      ORDER BY song_order ASC
-    ''', [eventId]);
-    return result;
+    PerformanceLogger.start('getEventDocumentsSummary');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+        SELECT * FROM v_event_documents_summary
+        WHERE event_id = ?
+        ORDER BY song_order ASC
+      ''', [eventId]);
+      PerformanceLogger.info('Riepilogo documenti evento', details: '${result.length} righe');
+      PerformanceLogger.stop('getEventDocumentsSummary');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getEventDocumentsSummary fallito', error: e);
+      return [];
+    }
   }
 
   /// Ottiene tutti i documenti di un evento (raggruppati per brano)
   Future<Map<String, List<Map<String, dynamic>>>> getEventDocumentsGrouped(String eventId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery('''
-      SELECT * FROM v_event_documents
-      WHERE event_id = ?
-      ORDER BY song_order ASC, document_order ASC
-    ''', [eventId]);
+    PerformanceLogger.start('getEventDocumentsGrouped');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+        SELECT * FROM v_event_documents
+        WHERE event_id = ?
+        ORDER BY song_order ASC, document_order ASC
+      ''', [eventId]);
 
-    final Map<String, List<Map<String, dynamic>>> grouped = {};
-    for (var row in result) {
-      final songId = row['song_id'] as String;
-      if (!grouped.containsKey(songId)) {
-        grouped[songId] = [];
+      final Map<String, List<Map<String, dynamic>>> grouped = {};
+      for (var row in result) {
+        final songId = row['song_id'] as String;
+        if (!grouped.containsKey(songId)) {
+          grouped[songId] = [];
+        }
+        grouped[songId]!.add(row);
       }
-      grouped[songId]!.add(row);
+      PerformanceLogger.info('Documenti raggruppati', details: '${grouped.length} brani');
+      PerformanceLogger.stop('getEventDocumentsGrouped');
+      return grouped;
+    } catch (e) {
+      PerformanceLogger.error('getEventDocumentsGrouped fallito', error: e);
+      return {};
     }
-    return grouped;
   }
 
   // ========== METODI EVENTI ==========
 
   Future<List<Event>> getAllEvents() async {
+    PerformanceLogger.start('getAllEvents');
     try {
       final db = await database;
       final List<Map<String, dynamic>> maps = await db.query(
@@ -729,16 +853,20 @@ class DatabaseService {
         orderBy: 'date DESC',
       );
       print('📊 Trovati ${maps.length} eventi');
+      PerformanceLogger.info('Eventi trovati', details: '${maps.length} eventi');
+      PerformanceLogger.stop('getAllEvents');
       return List.generate(maps.length, (i) {
         return Event.fromMap(maps[i]);
       });
     } catch (e) {
       print('❌ Errore in getAllEvents: $e');
+      PerformanceLogger.error('getAllEvents fallito', error: e);
       return [];
     }
   }
 
   Future<Event?> getEventById(String id) async {
+    PerformanceLogger.start('getEventById');
     try {
       final db = await database;
       final List<Map<String, dynamic>> maps = await db.query(
@@ -747,455 +875,737 @@ class DatabaseService {
         whereArgs: [id],
       );
       if (maps.isNotEmpty) {
+        PerformanceLogger.stop('getEventById');
         return Event.fromMap(maps.first);
       }
+      PerformanceLogger.stop('getEventById');
       return null;
     } catch (e) {
       print('❌ Errore in getEventById: $e');
+      PerformanceLogger.error('getEventById fallito', error: e);
       return null;
     }
   }
 
   Future<void> insertEvent(Event event) async {
-    final db = await database;
-    await db.insert(
-      'events',
-      event.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-    print('✅ Evento inserito: ${event.title}');
+    PerformanceLogger.start('insertEvent');
+    try {
+      final db = await database;
+      await db.insert(
+        'events',
+        event.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      print('✅ Evento inserito: ${event.title}');
+      PerformanceLogger.info('Evento inserito', details: event.title);
+      PerformanceLogger.stop('insertEvent');
+    } catch (e) {
+      PerformanceLogger.error('insertEvent fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> updateEvent(Event event) async {
-    final db = await database;
-    await db.update(
-      'events',
-      event.toMap(),
-      where: 'id = ?',
-      whereArgs: [event.id],
-    );
-    print('✅ Evento aggiornato: ${event.title}');
+    PerformanceLogger.start('updateEvent');
+    try {
+      final db = await database;
+      await db.update(
+        'events',
+        event.toMap(),
+        where: 'id = ?',
+        whereArgs: [event.id],
+      );
+      print('✅ Evento aggiornato: ${event.title}');
+      PerformanceLogger.info('Evento aggiornato', details: event.title);
+      PerformanceLogger.stop('updateEvent');
+    } catch (e) {
+      PerformanceLogger.error('updateEvent fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> deleteEvent(String id) async {
-    final db = await database;
-    await db.delete(
-      'events',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    print('🗑️ Evento eliminato: $id');
+    PerformanceLogger.start('deleteEvent');
+    try {
+      final db = await database;
+      await db.delete(
+        'events',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      print('🗑️ Evento eliminato: $id');
+      PerformanceLogger.stop('deleteEvent');
+    } catch (e) {
+      PerformanceLogger.error('deleteEvent fallito', error: e);
+      rethrow;
+    }
   }
 
   // ========== METODI CANZONI ==========
 
   Future<List<Song>> getAllSongs() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'songs',
-      orderBy: 'title ASC',
-    );
-    return List.generate(maps.length, (i) {
-      return Song.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getAllSongs');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'songs',
+        orderBy: 'title ASC',
+      );
+      PerformanceLogger.info('Canzoni trovate', details: '${maps.length} canzoni');
+      PerformanceLogger.stop('getAllSongs');
+      return List.generate(maps.length, (i) {
+        return Song.fromMap(maps[i]);
+      });
+    } catch (e) {
+      PerformanceLogger.error('getAllSongs fallito', error: e);
+      return [];
+    }
   }
 
   Future<void> insertSong(Song song) async {
-    final db = await database;
-    await db.insert('songs', song.toMap());
-    print('✅ Brano inserito: ${song.title}');
+    PerformanceLogger.start('insertSong');
+    try {
+      final db = await database;
+      await db.insert('songs', song.toMap());
+      print('✅ Brano inserito: ${song.title}');
+      PerformanceLogger.stop('insertSong');
+    } catch (e) {
+      PerformanceLogger.error('insertSong fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> updateSong(Song song) async {
-    final db = await database;
-    await db.update(
-      'songs',
-      song.toMap(),
-      where: 'id = ?',
-      whereArgs: [song.id],
-    );
-    print('✅ Brano aggiornato: ${song.title}');
+    PerformanceLogger.start('updateSong');
+    try {
+      final db = await database;
+      await db.update(
+        'songs',
+        song.toMap(),
+        where: 'id = ?',
+        whereArgs: [song.id],
+      );
+      print('✅ Brano aggiornato: ${song.title}');
+      PerformanceLogger.stop('updateSong');
+    } catch (e) {
+      PerformanceLogger.error('updateSong fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> deleteSong(String id) async {
-    final db = await database;
-    await db.delete(
-      'event_songs',
-      where: 'song_id = ?',
-      whereArgs: [id],
-    );
-    await db.delete(
-      'songs',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    print('🗑️ Brano eliminato: $id');
+    PerformanceLogger.start('deleteSong');
+    try {
+      final db = await database;
+      await db.delete(
+        'event_songs',
+        where: 'song_id = ?',
+        whereArgs: [id],
+      );
+      await db.delete(
+        'songs',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      print('🗑️ Brano eliminato: $id');
+      PerformanceLogger.stop('deleteSong');
+    } catch (e) {
+      PerformanceLogger.error('deleteSong fallito', error: e);
+      rethrow;
+    }
   }
 
   // ========== METODI SONG EVENTI ==========
 
   Future<void> addSongToEvent(String eventId, String songId, {int orderIndex = 0}) async {
-    final db = await database;
+    PerformanceLogger.start('addSongToEvent');
+    try {
+      final db = await database;
 
-    final existing = await db.query(
-      'event_songs',
-      where: 'event_id = ? AND song_id = ?',
-      whereArgs: [eventId, songId],
-    );
+      final existing = await db.query(
+        'event_songs',
+        where: 'event_id = ? AND song_id = ?',
+        whereArgs: [eventId, songId],
+      );
 
-    if (existing.isNotEmpty) {
-      print('ℹ️ Canzone già associata all\'evento');
-      return;
+      if (existing.isNotEmpty) {
+        print('ℹ️ Canzone già associata all\'evento');
+        PerformanceLogger.stop('addSongToEvent');
+        return;
+      }
+
+      final eventSong = EventSong(
+        id: generateId(),
+        eventId: eventId,
+        songId: songId,
+        orderIndex: orderIndex,
+        createdAt: DateTime.now().toIso8601String(),
+      );
+
+      await db.insert('event_songs', eventSong.toMap());
+      print('✅ Canzone associata all\'evento: $songId → $eventId');
+      PerformanceLogger.stop('addSongToEvent');
+    } catch (e) {
+      PerformanceLogger.error('addSongToEvent fallito', error: e);
+      rethrow;
     }
-
-    final eventSong = EventSong(
-      id: generateId(),
-      eventId: eventId,
-      songId: songId,
-      orderIndex: orderIndex,
-      createdAt: DateTime.now().toIso8601String(),
-    );
-
-    await db.insert('event_songs', eventSong.toMap());
-    print('✅ Canzone associata all\'evento: $songId → $eventId');
   }
 
   Future<void> removeSongFromEvent(String eventId, String songId) async {
-    final db = await database;
-    await db.delete(
-      'event_songs',
-      where: 'event_id = ? AND song_id = ?',
-      whereArgs: [eventId, songId],
-    );
-    print('🗑️ Canzone rimossa dall\'evento');
+    PerformanceLogger.start('removeSongFromEvent');
+    try {
+      final db = await database;
+      await db.delete(
+        'event_songs',
+        where: 'event_id = ? AND song_id = ?',
+        whereArgs: [eventId, songId],
+      );
+      print('🗑️ Canzone rimossa dall\'evento');
+      PerformanceLogger.stop('removeSongFromEvent');
+    } catch (e) {
+      PerformanceLogger.error('removeSongFromEvent fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<List<Song>> getSongsByEvent(String eventId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
-    SELECT s.* 
-    FROM songs s
-    INNER JOIN event_songs es ON s.id = es.song_id
-    WHERE es.event_id = ?
-    ORDER BY es.order_index ASC, s.title ASC
-  ''', [eventId]);
+    PerformanceLogger.start('getSongsByEvent');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      SELECT s.* 
+      FROM songs s
+      INNER JOIN event_songs es ON s.id = es.song_id
+      WHERE es.event_id = ?
+      ORDER BY es.order_index ASC, s.title ASC
+    ''', [eventId]);
 
-    return List.generate(maps.length, (i) {
-      return Song.fromMap(maps[i]);
-    });
+      final songs = List.generate(maps.length, (i) {
+        return Song.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Canzoni per evento', details: '${songs.length} canzoni');
+      PerformanceLogger.stop('getSongsByEvent');
+      return songs;
+    } catch (e) {
+      PerformanceLogger.error('getSongsByEvent fallito', error: e);
+      return [];
+    }
   }
 
   Future<List<Event>> getEventsBySong(String songId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
-    SELECT e.* 
-    FROM events e
-    INNER JOIN event_songs es ON e.id = es.event_id
-    WHERE es.song_id = ?
-    ORDER BY e.date DESC
-  ''', [songId]);
+    PerformanceLogger.start('getEventsBySong');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      SELECT e.* 
+      FROM events e
+      INNER JOIN event_songs es ON e.id = es.event_id
+      WHERE es.song_id = ?
+      ORDER BY e.date DESC
+    ''', [songId]);
 
-    return List.generate(maps.length, (i) {
-      return Event.fromMap(maps[i]);
-    });
+      final events = List.generate(maps.length, (i) {
+        return Event.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Eventi per canzone', details: '${events.length} eventi');
+      PerformanceLogger.stop('getEventsBySong');
+      return events;
+    } catch (e) {
+      PerformanceLogger.error('getEventsBySong fallito', error: e);
+      return [];
+    }
   }
 
   Future<void> updateSongOrder(String eventId, String songId, int orderIndex) async {
-    final db = await database;
-    await db.update(
-      'event_songs',
-      {'order_index': orderIndex, 'updated_at': DateTime.now().toIso8601String()},
-      where: 'event_id = ? AND song_id = ?',
-      whereArgs: [eventId, songId],
-    );
+    PerformanceLogger.start('updateSongOrder');
+    try {
+      final db = await database;
+      await db.update(
+        'event_songs',
+        {'order_index': orderIndex, 'updated_at': DateTime.now().toIso8601String()},
+        where: 'event_id = ? AND song_id = ?',
+        whereArgs: [eventId, songId],
+      );
+      PerformanceLogger.stop('updateSongOrder');
+    } catch (e) {
+      PerformanceLogger.error('updateSongOrder fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<Song?> getSongById(String id) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'songs',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    if (maps.isNotEmpty) {
-      return Song.fromMap(maps.first);
+    PerformanceLogger.start('getSongById');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'songs',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (maps.isNotEmpty) {
+        PerformanceLogger.stop('getSongById');
+        return Song.fromMap(maps.first);
+      }
+      PerformanceLogger.stop('getSongById');
+      return null;
+    } catch (e) {
+      PerformanceLogger.error('getSongById fallito', error: e);
+      return null;
     }
-    return null;
   }
 
   // ========== METODI ISCRIZIONE ==========
 
   Future<List<Registration>> getRegistrationsByEvent(String eventId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'registrations',
-      where: 'event_id = ?',
-      whereArgs: [eventId],
-    );
-    return List.generate(maps.length, (i) {
-      return Registration.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getRegistrationsByEvent');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'registrations',
+        where: 'event_id = ?',
+        whereArgs: [eventId],
+      );
+      final registrations = List.generate(maps.length, (i) {
+        return Registration.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Iscrizioni per evento', details: '${registrations.length} iscrizioni');
+      PerformanceLogger.stop('getRegistrationsByEvent');
+      return registrations;
+    } catch (e) {
+      PerformanceLogger.error('getRegistrationsByEvent fallito', error: e);
+      return [];
+    }
   }
 
   Future<Map<String, int>> getDocumentsCountBySong() async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery('''
-    SELECT 
-      sd.song_id,
-      COUNT(DISTINCT sd.document_id) as count
-    FROM song_documents sd
-    GROUP BY sd.song_id
-  ''');
+    PerformanceLogger.start('getDocumentsCountBySong');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT 
+        sd.song_id,
+        COUNT(DISTINCT sd.document_id) as count
+      FROM song_documents sd
+      GROUP BY sd.song_id
+    ''');
 
-    final Map<String, int> countMap = {};
-    for (var row in result) {
-      countMap[row['song_id'] as String] = row['count'] as int;
+      final Map<String, int> countMap = {};
+      for (var row in result) {
+        countMap[row['song_id'] as String] = row['count'] as int;
+      }
+      PerformanceLogger.info('Conteggio documenti per canzone', details: '${countMap.length} canzoni');
+      PerformanceLogger.stop('getDocumentsCountBySong');
+      return countMap;
+    } catch (e) {
+      PerformanceLogger.error('getDocumentsCountBySong fallito', error: e);
+      return {};
     }
-    return countMap;
   }
 
   Future<Map<String, List<String>>> getInstrumentsBySongForEvent(String eventId) async {
-    final db = await database;
-    final registrations = await getRegistrationsByEvent(eventId);
+    PerformanceLogger.start('getInstrumentsBySongForEvent');
+    try {
+      final db = await database;
+      final registrations = await getRegistrationsByEvent(eventId);
 
-    final Map<String, List<String>> result = {};
+      final Map<String, List<String>> result = {};
 
-    for (var reg in registrations) {
-      if (reg.selectedSongIds != null && reg.selectedSongIds!.isNotEmpty) {
-        final songIds = reg.selectedSongIds!.split(',');
-        for (var songId in songIds) {
-          if (!result.containsKey(songId)) {
-            result[songId] = [];
-          }
-          if (reg.instrumentChoice != null) {
-            result[songId]!.add(reg.instrumentChoice!);
+      for (var reg in registrations) {
+        if (reg.selectedSongIds != null && reg.selectedSongIds!.isNotEmpty) {
+          final songIds = reg.selectedSongIds!.split(',');
+          for (var songId in songIds) {
+            if (!result.containsKey(songId)) {
+              result[songId] = [];
+            }
+            if (reg.instrumentChoice != null) {
+              result[songId]!.add(reg.instrumentChoice!);
+            }
           }
         }
       }
+      PerformanceLogger.info('Strumenti per canzone', details: '${result.length} canzoni');
+      PerformanceLogger.stop('getInstrumentsBySongForEvent');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getInstrumentsBySongForEvent fallito', error: e);
+      return {};
     }
-
-    return result;
   }
 
   Future<Map<String, int>> getRegistrationsCountBySongForEvent(String eventId) async {
-    final db = await database;
+    PerformanceLogger.start('getRegistrationsCountBySongForEvent');
+    try {
+      final db = await database;
 
-    final registrations = await db.query(
-      'registrations',
-      where: 'event_id = ? AND status = ?',
-      whereArgs: [eventId, 'confirmed'],
-    );
+      final registrations = await db.query(
+        'registrations',
+        where: 'event_id = ? AND status = ?',
+        whereArgs: [eventId, 'confirmed'],
+      );
 
-    final Map<String, int> result = {};
+      final Map<String, int> result = {};
 
-    for (var reg in registrations) {
-      final selectedSongIds = reg['selected_song_ids'] as String?;
-      if (selectedSongIds != null && selectedSongIds.isNotEmpty) {
-        final songIds = selectedSongIds.split(',');
-        for (var songId in songIds) {
-          result[songId] = (result[songId] ?? 0) + 1;
+      for (var reg in registrations) {
+        final selectedSongIds = reg['selected_song_ids'] as String?;
+        if (selectedSongIds != null && selectedSongIds.isNotEmpty) {
+          final songIds = selectedSongIds.split(',');
+          for (var songId in songIds) {
+            result[songId] = (result[songId] ?? 0) + 1;
+          }
         }
       }
+      PerformanceLogger.info('Conteggio iscrizioni per canzone', details: '${result.length} canzoni');
+      PerformanceLogger.stop('getRegistrationsCountBySongForEvent');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getRegistrationsCountBySongForEvent fallito', error: e);
+      return {};
     }
-
-    return result;
   }
 
   // ========== METODI DOCUMENTI ==========
 
   Future<List<Document>> getAllDocuments() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query('documents');
-    return List.generate(maps.length, (i) {
-      return Document.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getAllDocuments');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query('documents');
+      final documents = List.generate(maps.length, (i) {
+        return Document.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Tutti i documenti', details: '${documents.length} documenti');
+      PerformanceLogger.stop('getAllDocuments');
+      return documents;
+    } catch (e) {
+      PerformanceLogger.error('getAllDocuments fallito', error: e);
+      return [];
+    }
   }
 
   Future<Document?> getDocumentById(String id) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'documents',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    if (maps.isNotEmpty) {
-      return Document.fromMap(maps.first);
+    PerformanceLogger.start('getDocumentById');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'documents',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (maps.isNotEmpty) {
+        PerformanceLogger.stop('getDocumentById');
+        return Document.fromMap(maps.first);
+      }
+      PerformanceLogger.stop('getDocumentById');
+      return null;
+    } catch (e) {
+      PerformanceLogger.error('getDocumentById fallito', error: e);
+      return null;
     }
-    return null;
   }
 
   Future<void> insertDocument(Document document) async {
-    final db = await database;
-    await db.insert('documents', document.toMap());
-    print('✅ Documento inserito: ${document.fileName}');
+    PerformanceLogger.start('insertDocument');
+    try {
+      final db = await database;
+
+      // 1. Crea una copia della mappa del documento
+      final Map<String, dynamic> documentMap = document.toMap();
+
+      // 2. Rimuovi i campi che NON appartengono alla tabella 'documents'
+      // (Questi campi vengono gestiti nelle tabelle ponte song_documents o event_song_documents)
+      final dynamic songId = documentMap.remove('song_id');
+      documentMap.remove('songId'); // Rimuove anche l'eventuale chiave camelCase
+
+      // 3. Inserisci il documento nella tabella 'documents' (SENZA song_id)
+      await db.insert('documents', documentMap);
+
+      // 4. Se il documento è associato a una canzone, crea la relazione in 'song_documents'
+      if (songId != null && songId.toString().isNotEmpty) {
+        // Controlla se la relazione esiste già per evitare duplicati
+        final existing = await db.query(
+          'song_documents',
+          where: 'document_id = ? AND song_id = ?',
+          whereArgs: [document.id, songId.toString()],
+        );
+
+        if (existing.isEmpty) {
+          await db.insert('song_documents', {
+            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'document_id': document.id,
+            'song_id': songId.toString(),
+            'order_index': 0,
+            'notes': null,
+            'created_at': DateTime.now().toIso8601String(),
+            'updated_at': null,
+          });
+        }
+      }
+
+      print('✅ Documento inserito: ${document.fileName}');
+      PerformanceLogger.info('Documento inserito', details: document.fileName);
+      PerformanceLogger.stop('insertDocument');
+    } catch (e) {
+      PerformanceLogger.error('insertDocument fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> updateDocument(Document document) async {
-    final db = await database;
-    await db.update(
-      'documents',
-      document.toMap(),
-      where: 'id = ?',
-      whereArgs: [document.id],
-    );
-    print('✅ Documento aggiornato: ${document.fileName}');
+    PerformanceLogger.start('updateDocument');
+    try {
+      final db = await database;
+      await db.update(
+        'documents',
+        document.toMap(),
+        where: 'id = ?',
+        whereArgs: [document.id],
+      );
+      print('✅ Documento aggiornato: ${document.fileName}');
+      PerformanceLogger.info('Documento aggiornato', details: document.fileName);
+      PerformanceLogger.stop('updateDocument');
+    } catch (e) {
+      PerformanceLogger.error('updateDocument fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> deleteDocument(String id) async {
-    final db = await database;
-    await db.delete(
-      'song_documents',
-      where: 'document_id = ?',
-      whereArgs: [id],
-    );
-    await db.delete(
-      'documents',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    print('🗑️ Documento eliminato: $id');
+    PerformanceLogger.start('deleteDocument');
+    try {
+      final db = await database;
+      await db.delete(
+        'song_documents',
+        where: 'document_id = ?',
+        whereArgs: [id],
+      );
+      await db.delete(
+        'documents',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      print('🗑️ Documento eliminato: $id');
+      PerformanceLogger.stop('deleteDocument');
+    } catch (e) {
+      PerformanceLogger.error('deleteDocument fallito', error: e);
+      rethrow;
+    }
   }
 
   // ========== METODI RELAZIONE DOCUMENTO-BRANO ==========
 
   Future<void> addDocumentToSong(String documentId, String songId, {int orderIndex = 0}) async {
-    final db = await database;
-    final existing = await db.query(
-      'song_documents',
-      where: 'document_id = ? AND song_id = ?',
-      whereArgs: [documentId, songId],
-    );
-    if (existing.isNotEmpty) {
-      print('ℹ️ Documento già associato al brano');
-      return;
+    PerformanceLogger.start('addDocumentToSong');
+    try {
+      final db = await database;
+      final existing = await db.query(
+        'song_documents',
+        where: 'document_id = ? AND song_id = ?',
+        whereArgs: [documentId, songId],
+      );
+      if (existing.isNotEmpty) {
+        print('ℹ️ Documento già associato al brano');
+        PerformanceLogger.stop('addDocumentToSong');
+        return;
+      }
+      final id = generateId();
+      await db.insert('song_documents', {
+        'id': id,
+        'document_id': documentId,
+        'song_id': songId,
+        'order_index': orderIndex,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+      print('✅ Documento associato al brano');
+      PerformanceLogger.stop('addDocumentToSong');
+    } catch (e) {
+      PerformanceLogger.error('addDocumentToSong fallito', error: e);
+      rethrow;
     }
-    final id = generateId();
-    await db.insert('song_documents', {
-      'id': id,
-      'document_id': documentId,
-      'song_id': songId,
-      'order_index': orderIndex,
-      'created_at': DateTime.now().toIso8601String(),
-    });
-    print('✅ Documento associato al brano');
   }
 
   Future<void> removeDocumentFromSong(String documentId, String songId) async {
-    final db = await database;
-    await db.delete(
-      'song_documents',
-      where: 'document_id = ? AND song_id = ?',
-      whereArgs: [documentId, songId],
-    );
-    print('🗑️ Documento rimosso dal brano');
+    PerformanceLogger.start('removeDocumentFromSong');
+    try {
+      final db = await database;
+      await db.delete(
+        'song_documents',
+        where: 'document_id = ? AND song_id = ?',
+        whereArgs: [documentId, songId],
+      );
+      print('🗑️ Documento rimosso dal brano');
+      PerformanceLogger.stop('removeDocumentFromSong');
+    } catch (e) {
+      PerformanceLogger.error('removeDocumentFromSong fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<List<Document>> getDocumentsBySong(String songId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
-    SELECT d.* 
-    FROM documents d
-    INNER JOIN song_documents sd ON d.id = sd.document_id
-    WHERE sd.song_id = ?
-    ORDER BY sd.order_index ASC, d.file_name ASC
-  ''', [songId]);
-    return List.generate(maps.length, (i) {
-      return Document.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getDocumentsBySong');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      SELECT d.* 
+      FROM documents d
+      INNER JOIN song_documents sd ON d.id = sd.document_id
+      WHERE sd.song_id = ?
+      ORDER BY sd.order_index ASC, d.file_name ASC
+    ''', [songId]);
+
+      final documents = List.generate(maps.length, (i) {
+        return Document.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Documenti per brano', details: '${documents.length} documenti');
+      PerformanceLogger.stop('getDocumentsBySong');
+      return documents;
+    } catch (e) {
+      PerformanceLogger.error('getDocumentsBySong fallito', error: e);
+      return [];
+    }
   }
 
   Future<List<Document>> getDocumentsByType(String docType) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'documents',
-      where: 'doc_type = ?',
-      whereArgs: [docType],
-      orderBy: 'file_name ASC',
-    );
-    return List.generate(maps.length, (i) {
-      return Document.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getDocumentsByType');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'documents',
+        where: 'doc_type = ?',
+        whereArgs: [docType],
+        orderBy: 'file_name ASC',
+      );
+      final documents = List.generate(maps.length, (i) {
+        return Document.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Documenti per tipo', details: '$docType - ${documents.length} documenti');
+      PerformanceLogger.stop('getDocumentsByType');
+      return documents;
+    } catch (e) {
+      PerformanceLogger.error('getDocumentsByType fallito', error: e);
+      return [];
+    }
   }
 
   // ========== METODI EVENT_SONG_DOCUMENTS (NUOVI) ==========
 
   /// Ottiene l'event_song_id per un evento e un brano
   Future<String?> getEventSongId(String eventId, String songId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.query(
-      'event_songs',
-      where: 'event_id = ? AND song_id = ?',
-      whereArgs: [eventId, songId],
-      limit: 1,
-    );
-    if (result.isEmpty) return null;
-    return result.first['id'] as String;
+    PerformanceLogger.start('getEventSongId');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.query(
+        'event_songs',
+        where: 'event_id = ? AND song_id = ?',
+        whereArgs: [eventId, songId],
+        limit: 1,
+      );
+      if (result.isEmpty) {
+        PerformanceLogger.stop('getEventSongId');
+        return null;
+      }
+      PerformanceLogger.stop('getEventSongId');
+      return result.first['id'] as String;
+    } catch (e) {
+      PerformanceLogger.error('getEventSongId fallito', error: e);
+      return null;
+    }
   }
 
   /// Ottiene i documenti specifici per un evento-brano
   Future<List<EventSongDocument>> getDocumentsForEventSong(String eventSongId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'event_song_documents',
-      where: 'event_song_id = ?',
-      whereArgs: [eventSongId],
-      orderBy: 'order_index ASC',
-    );
-    return List.generate(maps.length, (i) {
-      return EventSongDocument.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getDocumentsForEventSong');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'event_song_documents',
+        where: 'event_song_id = ?',
+        whereArgs: [eventSongId],
+        orderBy: 'order_index ASC',
+      );
+      final documents = List.generate(maps.length, (i) {
+        return EventSongDocument.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Documenti per evento-brano', details: '${documents.length} documenti');
+      PerformanceLogger.stop('getDocumentsForEventSong');
+      return documents;
+    } catch (e) {
+      PerformanceLogger.error('getDocumentsForEventSong fallito', error: e);
+      return [];
+    }
   }
 
   /// Aggiunge un documento a un evento-brano
   Future<void> addDocumentToEventSong(String eventSongId, String documentId, {int orderIndex = 0, String? notes}) async {
-    final db = await database;
-    final id = generateId();
-    await db.insert(
-      'event_song_documents',
-      {
-        'id': id,
-        'event_song_id': eventSongId,
-        'document_id': documentId,
-        'order_index': orderIndex,
-        'notes': notes,
-        'created_at': DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-    print('✅ Documento aggiunto a evento-brano');
+    PerformanceLogger.start('addDocumentToEventSong');
+    try {
+      final db = await database;
+      final id = generateId();
+      await db.insert(
+        'event_song_documents',
+        {
+          'id': id,
+          'event_song_id': eventSongId,
+          'document_id': documentId,
+          'order_index': orderIndex,
+          'notes': notes,
+          'created_at': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      print('✅ Documento aggiunto a evento-brano');
+      PerformanceLogger.stop('addDocumentToEventSong');
+    } catch (e) {
+      PerformanceLogger.error('addDocumentToEventSong fallito', error: e);
+      rethrow;
+    }
   }
 
   /// Rimuove un documento da un evento-brano
   Future<void> removeDocumentFromEventSong(String eventSongId, String documentId) async {
-    final db = await database;
-    await db.delete(
-      'event_song_documents',
-      where: 'event_song_id = ? AND document_id = ?',
-      whereArgs: [eventSongId, documentId],
-    );
-    print('🗑️ Documento rimosso da evento-brano');
+    PerformanceLogger.start('removeDocumentFromEventSong');
+    try {
+      final db = await database;
+      await db.delete(
+        'event_song_documents',
+        where: 'event_song_id = ? AND document_id = ?',
+        whereArgs: [eventSongId, documentId],
+      );
+      print('🗑️ Documento rimosso da evento-brano');
+      PerformanceLogger.stop('removeDocumentFromEventSong');
+    } catch (e) {
+      PerformanceLogger.error('removeDocumentFromEventSong fallito', error: e);
+      rethrow;
+    }
   }
 
   /// Ottiene i documenti di un evento-brano con i dettagli del documento
   Future<List<Map<String, dynamic>>> getEventSongDocumentsWithDetails(String eventSongId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery('''
-      SELECT 
-        esd.*,
-        d.id as document_id,
-        d.file_name,
-        d.doc_type,
-        d.file_path,
-        d.file_size,
-        d.description,
-        d.is_public
-      FROM event_song_documents esd
-      LEFT JOIN documents d ON esd.document_id = d.id
-      WHERE esd.event_song_id = ?
-      ORDER BY esd.order_index ASC
-    ''', [eventSongId]);
+    PerformanceLogger.start('getEventSongDocumentsWithDetails');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+        SELECT 
+          esd.*,
+          d.id as document_id,
+          d.file_name,
+          d.doc_type,
+          d.file_path,
+          d.file_size,
+          d.description,
+          d.is_public
+        FROM event_song_documents esd
+        LEFT JOIN documents d ON esd.document_id = d.id
+        WHERE esd.event_song_id = ?
+        ORDER BY esd.order_index ASC
+      ''', [eventSongId]);
 
-    return result;
+      PerformanceLogger.info('Documenti evento-brano con dettagli', details: '${result.length} documenti');
+      PerformanceLogger.stop('getEventSongDocumentsWithDetails');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getEventSongDocumentsWithDetails fallito', error: e);
+      return [];
+    }
   }
 
   /// Ottiene tutti i documenti di un evento (raggruppati per brano) - usa la vista
@@ -1205,152 +1615,282 @@ class DatabaseService {
 
   /// Ottiene i documenti di un evento per un brano specifico
   Future<List<Map<String, dynamic>>> getDocumentsForEventAndSong(String eventId, String songId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> result = await db.rawQuery('''
-      SELECT 
-        esd.*,
-        d.id as document_id,
-        d.file_name,
-        d.doc_type,
-        d.file_path,
-        d.file_size,
-        d.description,
-        d.is_public
-      FROM event_songs es
-      LEFT JOIN event_song_documents esd ON es.id = esd.event_song_id
-      LEFT JOIN documents d ON esd.document_id = d.id
-      WHERE es.event_id = ? AND es.song_id = ?
-      ORDER BY esd.order_index ASC
-    ''', [eventId, songId]);
+    PerformanceLogger.start('getDocumentsForEventAndSong');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+        SELECT 
+          esd.*,
+          d.id as document_id,
+          d.file_name,
+          d.doc_type,
+          d.file_path,
+          d.file_size,
+          d.description,
+          d.is_public
+        FROM event_songs es
+        LEFT JOIN event_song_documents esd ON es.id = esd.event_song_id
+        LEFT JOIN documents d ON esd.document_id = d.id
+        WHERE es.event_id = ? AND es.song_id = ?
+        ORDER BY esd.order_index ASC
+      ''', [eventId, songId]);
 
-    return result;
+      PerformanceLogger.info('Documenti per evento e brano', details: '${result.length} documenti');
+      PerformanceLogger.stop('getDocumentsForEventAndSong');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getDocumentsForEventAndSong fallito', error: e);
+      return [];
+    }
+  }
+
+  /// Collega un documento (esistente o appena creato) a un evento-brano.
+  Future<void> insertEventSongDocument({
+    required String eventSongId,
+    required String documentId,
+    int orderIndex = 0,
+    String? notes,
+  }) async {
+    PerformanceLogger.start('insertEventSongDocument');
+    try {
+      final db = await database;
+      await db.insert(
+        'event_song_documents',
+        {
+          'id': DateTime.now().millisecondsSinceEpoch.toString(),
+          'event_song_id': eventSongId,
+          'document_id': documentId,
+          'order_index': orderIndex,
+          'notes': notes,
+          'created_at': DateTime.now().toIso8601String(),
+          'updated_at': null,
+        },
+      );
+      print('🔗 Documento $documentId collegato a evento-brano $eventSongId');
+      PerformanceLogger.stop('insertEventSongDocument');
+    } catch (e) {
+      PerformanceLogger.error('insertEventSongDocument fallito', error: e);
+      rethrow;
+    }
   }
 
   /// Aggiorna l'ordine di un documento in un evento-brano
   Future<void> updateEventSongDocumentOrder(String eventSongDocumentId, int orderIndex) async {
-    final db = await database;
-    await db.update(
-      'event_song_documents',
-      {'order_index': orderIndex, 'updated_at': DateTime.now().toIso8601String()},
-      where: 'id = ?',
-      whereArgs: [eventSongDocumentId],
-    );
+    PerformanceLogger.start('updateEventSongDocumentOrder');
+    try {
+      final db = await database;
+      await db.update(
+        'event_song_documents',
+        {'order_index': orderIndex, 'updated_at': DateTime.now().toIso8601String()},
+        where: 'id = ?',
+        whereArgs: [eventSongDocumentId],
+      );
+      PerformanceLogger.stop('updateEventSongDocumentOrder');
+    } catch (e) {
+      PerformanceLogger.error('updateEventSongDocumentOrder fallito', error: e);
+      rethrow;
+    }
   }
 
   /// Elimina tutti i documenti di un evento-brano
   Future<void> clearDocumentsFromEventSong(String eventSongId) async {
-    final db = await database;
-    await db.delete(
-      'event_song_documents',
-      where: 'event_song_id = ?',
-      whereArgs: [eventSongId],
-    );
-    print('🗑️ Tutti i documenti rimossi da evento-brano');
+    PerformanceLogger.start('clearDocumentsFromEventSong');
+    try {
+      final db = await database;
+      await db.delete(
+        'event_song_documents',
+        where: 'event_song_id = ?',
+        whereArgs: [eventSongId],
+      );
+      print('🗑️ Tutti i documenti rimossi da evento-brano');
+      PerformanceLogger.stop('clearDocumentsFromEventSong');
+    } catch (e) {
+      PerformanceLogger.error('clearDocumentsFromEventSong fallito', error: e);
+      rethrow;
+    }
   }
 
   // ========== METODI REGISTRAZIONI ==========
 
   Future<List<Registration>> getAllRegistrations() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'registrations',
-      orderBy: 'created_at DESC',
-    );
-    return List.generate(maps.length, (i) {
-      return Registration.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getAllRegistrations');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'registrations',
+        orderBy: 'created_at DESC',
+      );
+      final registrations = List.generate(maps.length, (i) {
+        return Registration.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Tutte le iscrizioni', details: '${registrations.length} iscrizioni');
+      PerformanceLogger.stop('getAllRegistrations');
+      return registrations;
+    } catch (e) {
+      PerformanceLogger.error('getAllRegistrations fallito', error: e);
+      return [];
+    }
   }
 
   Future<int> countRegistrationsByEvent(String eventId) async {
-    final db = await database;
-    final result = await db.rawQuery(
-      'SELECT COUNT(*) as count FROM registrations WHERE event_id = ?',
-      [eventId],
-    );
-    return Sqflite.firstIntValue(result) ?? 0;
+    PerformanceLogger.start('countRegistrationsByEvent');
+    try {
+      final db = await database;
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM registrations WHERE event_id = ?',
+        [eventId],
+      );
+      final count = Sqflite.firstIntValue(result) ?? 0;
+      PerformanceLogger.stop('countRegistrationsByEvent');
+      return count;
+    } catch (e) {
+      PerformanceLogger.error('countRegistrationsByEvent fallito', error: e);
+      return 0;
+    }
   }
 
   Future<bool> isAlreadyRegistered(String eventId, String userId) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'registrations',
-      where: 'event_id = ? AND user_id = ?',
-      whereArgs: [eventId, userId],
-    );
-    return maps.isNotEmpty;
+    PerformanceLogger.start('isAlreadyRegistered');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'registrations',
+        where: 'event_id = ? AND user_id = ?',
+        whereArgs: [eventId, userId],
+      );
+      final registered = maps.isNotEmpty;
+      PerformanceLogger.stop('isAlreadyRegistered');
+      return registered;
+    } catch (e) {
+      PerformanceLogger.error('isAlreadyRegistered fallito', error: e);
+      return false;
+    }
   }
 
   Future<void> insertRegistration(Registration registration) async {
-    final db = await database;
-    await db.insert(
-      'registrations',
-      registration.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    PerformanceLogger.start('insertRegistration');
+    try {
+      final db = await database;
+      await db.insert(
+        'registrations',
+        registration.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      PerformanceLogger.stop('insertRegistration');
+    } catch (e) {
+      PerformanceLogger.error('insertRegistration fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> updateRegistrationStatus(String id, String status) async {
-    final db = await database;
-    await db.update(
-      'registrations',
-      {'status': status, 'updated_at': DateTime.now().toIso8601String()},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    PerformanceLogger.start('updateRegistrationStatus');
+    try {
+      final db = await database;
+      await db.update(
+        'registrations',
+        {'status': status, 'updated_at': DateTime.now().toIso8601String()},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      PerformanceLogger.stop('updateRegistrationStatus');
+    } catch (e) {
+      PerformanceLogger.error('updateRegistrationStatus fallito', error: e);
+      rethrow;
+    }
   }
 
   Future<void> deleteRegistration(String id) async {
-    final db = await database;
-    await db.delete(
-      'registrations',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    PerformanceLogger.start('deleteRegistration');
+    try {
+      final db = await database;
+      await db.delete(
+        'registrations',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      PerformanceLogger.stop('deleteRegistration');
+    } catch (e) {
+      PerformanceLogger.error('deleteRegistration fallito', error: e);
+      rethrow;
+    }
   }
 
   // ========== METODI UTENTI ==========
 
   Future<List<User>> getAllUsers() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query('users');
-    return List.generate(maps.length, (i) {
-      return User.fromMap(maps[i]);
-    });
+    PerformanceLogger.start('getAllUsers');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query('users');
+      final users = List.generate(maps.length, (i) {
+        return User.fromMap(maps[i]);
+      });
+      PerformanceLogger.info('Tutti gli utenti', details: '${users.length} utenti');
+      PerformanceLogger.stop('getAllUsers');
+      return users;
+    } catch (e) {
+      PerformanceLogger.error('getAllUsers fallito', error: e);
+      return [];
+    }
   }
 
   Future<User?> getUserById(String id) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'users',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    if (maps.isNotEmpty) {
-      return User.fromMap(maps.first);
+    PerformanceLogger.start('getUserById');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'users',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (maps.isNotEmpty) {
+        PerformanceLogger.stop('getUserById');
+        return User.fromMap(maps.first);
+      }
+      PerformanceLogger.stop('getUserById');
+      return null;
+    } catch (e) {
+      PerformanceLogger.error('getUserById fallito', error: e);
+      return null;
     }
-    return null;
   }
 
   Future<User?> getUserByEmail(String email) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'users',
-      where: 'email = ?',
-      whereArgs: [email],
-    );
-    if (maps.isNotEmpty) {
-      return User.fromMap(maps.first);
+    PerformanceLogger.start('getUserByEmail');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'users',
+        where: 'email = ?',
+        whereArgs: [email],
+      );
+      if (maps.isNotEmpty) {
+        PerformanceLogger.stop('getUserByEmail');
+        return User.fromMap(maps.first);
+      }
+      PerformanceLogger.stop('getUserByEmail');
+      return null;
+    } catch (e) {
+      PerformanceLogger.error('getUserByEmail fallito', error: e);
+      return null;
     }
-    return null;
   }
 
   Future<void> updateUserLastLogin(String userId) async {
-    final db = await database;
-    await db.update(
-      'users',
-      {'last_login': DateTime.now().toIso8601String()},
-      where: 'id = ?',
-      whereArgs: [userId],
-    );
+    PerformanceLogger.start('updateUserLastLogin');
+    try {
+      final db = await database;
+      await db.update(
+        'users',
+        {'last_login': DateTime.now().toIso8601String()},
+        where: 'id = ?',
+        whereArgs: [userId],
+      );
+      PerformanceLogger.stop('updateUserLastLogin');
+    } catch (e) {
+      PerformanceLogger.error('updateUserLastLogin fallito', error: e);
+      rethrow;
+    }
   }
 }

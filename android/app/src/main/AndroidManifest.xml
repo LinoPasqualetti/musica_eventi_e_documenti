@@ -1,4 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Necessario in release: senza questa, WebView/HTTP (es. abcjs da CDN nel
+         visualizzatore ABC) non funzionano nell'APK distribuito. Prima era
+         presente solo nei manifest di debug/profile, aggiunti automaticamente
+         da Flutter solo per il tooling di sviluppo. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Richiesto da Android 13 (API 33) in su per mostrare notifiche locali
+         (flutter_local_notifications); senza, le notifiche non compaiono. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:label="musica_eventi_e_documenti"
         android:name="${applicationName}"
@@ -40,6 +50,14 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Necessaria da Android 11 (API 30) in su perché canLaunchUrl/launchUrl
+             possano vedere l'app NotationPlayer tramite il suo schema custom
+             (vedi services/notation_player_launcher.dart). Senza questa entry,
+             canLaunchUrl restituisce sempre false anche con l'app installata. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="notationplayer"/>
         </intent>
     </queries>
 </manifest>

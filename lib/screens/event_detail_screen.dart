@@ -7,6 +7,7 @@ import '../models/song_model.dart';
 import '../providers/auth_provider.dart';
 import 'registration_form_screen.dart';
 import 'admin/event_songs_assignment.dart';
+import 'admin/event_song_documents.dart';
 
 class EventDetailScreen extends StatefulWidget {
   final String eventId;
@@ -57,6 +58,41 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           ),
         );
       }
+    }
+  }
+
+  void _navigateToDocuments(Song song) async {
+    try {
+      final eventSongId = await _db.getEventSongId(widget.eventId, song.id);
+
+      if (eventSongId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Errore: brano non associato a questo evento'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => EventSongDocumentsScreen(
+            eventId: widget.eventId,
+            songId: song.id,
+            eventSongId: eventSongId,
+            songTitle: song.title,
+          ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -235,212 +271,223 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   ),
                 ),
 
-                // ✅ SCALETTA CON DOPPIO CLICK PER ADMIN
-                GestureDetector(
-                  onDoubleTap: () {
-                    if (isAdmin) {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => EventSongsAssignment(
-                            event: _event!,
-                          ),
-                        ),
-                      );
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.transparent,
-                          Colors.black.withOpacity(0.85),
-                        ],
-                        stops: const [0.0, 0.06],
-                      ),
+                // ✅ SEZIONE SCALETTA CON BOTTONI
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.transparent,
+                        Colors.black.withOpacity(0.85),
+                      ],
+                      stops: const [0.0, 0.06],
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Intestazione scaletta
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                          child: Row(
-                            children: [
-                              const Icon(
-                                Icons.playlist_play,
-                                color: Colors.white54,
-                                size: 14,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 🔥 INTESTAZIONE SCALETTA CON BOTTONI
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.playlist_play,
+                              color: Colors.white54,
+                              size: 14,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '🎶 Scaletta (${_songs.length})',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white70,
                               ),
-                              const SizedBox(width: 6),
-                              Text(
-                                '🎶 Scaletta (${_songs.length})',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
+                            ),
+                            const Spacer(),
+                            // 🔥 BOTTONE GESTISCI SCALETTA (solo admin)
+                            if (isAdmin)
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.playlist_add,
                                   color: Colors.white70,
+                                  size: 18,
                                 ),
-                              ),
-                              if (isAdmin)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 8),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                      vertical: 1,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.deepPurple.withOpacity(0.7),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: const Text(
-                                      '🖱️ doppio tap per gestire',
-                                      style: TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 8,
-                                        fontStyle: FontStyle.italic,
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => EventSongsAssignment(
+                                        event: _event!,
                                       ),
                                     ),
-                                  ),
+                                  );
+                                },
+                                tooltip: 'Gestisci Scaletta',
+                              ),
+                            // 🔥 BOTTONE DOCUMENTI (solo admin)
+                            if (isAdmin)
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.folder,
+                                  color: Colors.white70,
+                                  size: 18,
                                 ),
-                            ],
-                          ),
+                                onPressed: () {
+                                  _showSongSelectionDialog();
+                                },
+                                tooltip: 'Gestisci Documenti',
+                              ),
+                          ],
                         ),
+                      ),
 
-                        // ✅ LISTA BRANI COMPATTA
-                        if (_songs.isEmpty)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Center(
-                              child: Text(
-                                'Nessun brano in scaletta',
-                                style: TextStyle(
-                                  color: Colors.white.withOpacity(0.4),
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ),
-                          )
-                        else
-                          ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxHeight: needsScroll
-                                  ? MediaQuery.of(context).size.height * 0.25
-                                  : double.infinity,
-                            ),
-                            child: SingleChildScrollView(
-                              physics: needsScroll
-                                  ? const BouncingScrollPhysics()
-                                  : const NeverScrollableScrollPhysics(),
-                              child: Wrap(
-                                spacing: 6,
-                                runSpacing: 0,
-                                children: _songs.asMap().entries.map((entry) {
-                                  final index = entry.key;
-                                  final song = entry.value;
-                                  return SizedBox(
-                                    width: (MediaQuery.of(context).size.width - 36) / 2,
-                                    height: 24,
-                                    child: Row(
-                                      children: [
-                                        SizedBox(
-                                          width: 16,
-                                          child: Text(
-                                            '${index + 1}',
-                                            style: TextStyle(
-                                              color: Colors.white.withOpacity(0.25),
-                                              fontSize: 9,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Expanded(
-                                          child: Text(
-                                            song.title,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w400,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
+                      // ✅ LISTA BRANI COMPATTA
+                      if (_songs.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Center(
+                            child: Text(
+                              'Nessun brano in scaletta',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.4),
+                                fontSize: 11,
                               ),
                             ),
                           ),
-
-                        // Pulsante iscrizione
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(0, 2, 0, 6),
-                          child: SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton.icon(
-                              onPressed: () {
-                                final now = DateTime.now();
-                                final eventDate = DateTime.tryParse(_event!.date);
-                                final isPast = eventDate != null && eventDate.isBefore(now);
-                                final isPublished = _event!.status == 'published';
-
-                                if (isPast) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('⚠️ Questo evento è già passato'),
-                                      backgroundColor: Colors.orange,
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                if (!isPublished) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('🔒 Questo evento non è ancora pubblicato'),
-                                      backgroundColor: Colors.orange,
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => RegistrationFormScreen(
-                                      event: _event!,
-                                      songs: _songs,
-                                    ),
+                        )
+                      else
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight: needsScroll
+                                ? MediaQuery.of(context).size.height * 0.25
+                                : double.infinity,
+                          ),
+                          child: SingleChildScrollView(
+                            physics: needsScroll
+                                ? const BouncingScrollPhysics()
+                                : const NeverScrollableScrollPhysics(),
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 0,
+                              children: _songs.asMap().entries.map((entry) {
+                                final index = entry.key;
+                                final song = entry.value;
+                                return SizedBox(
+                                  width: (MediaQuery.of(context).size.width - 36) / 2,
+                                  height: 24,
+                                  child: Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 16,
+                                        child: Text(
+                                          '${index + 1}',
+                                          style: TextStyle(
+                                            color: Colors.white.withOpacity(0.25),
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          song.title,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      // 🔥 BOTTONE DOCUMENTI PER SINGOLO BRANO (admin)
+                                      if (isAdmin)
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.folder_open,
+                                            color: Colors.white38,
+                                            size: 14,
+                                          ),
+                                          onPressed: () => _navigateToDocuments(song),
+                                          tooltip: 'Documenti del brano',
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(),
+                                        ),
+                                    ],
                                   ),
                                 );
-                              },
-                              icon: const Icon(Icons.music_note, size: 14),
-                              label: const Text(
-                                '🎸 Voglio Suonare sul Palco!',
-                                style: TextStyle(fontSize: 12),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.deepPurple,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 6),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                minimumSize: const Size(double.infinity, 30),
-                                elevation: 0,
-                              ),
+                              }).toList(),
                             ),
                           ),
                         ),
-                      ],
-                    ),
+
+                      // Pulsante iscrizione
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(0, 2, 0, 6),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: () {
+                              final now = DateTime.now();
+                              final eventDate = DateTime.tryParse(_event!.date);
+                              final isPast = eventDate != null && eventDate.isBefore(now);
+                              final isPublished = _event!.status == 'published';
+
+                              if (isPast) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('⚠️ Questo evento è già passato'),
+                                    backgroundColor: Colors.orange,
+                                  ),
+                                );
+                                return;
+                              }
+
+                              if (!isPublished) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('🔒 Questo evento non è ancora pubblicato'),
+                                    backgroundColor: Colors.orange,
+                                  ),
+                                );
+                                return;
+                              }
+
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => RegistrationFormScreen(
+                                    event: _event!,
+                                    songs: _songs,
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.music_note, size: 14),
+                            label: const Text(
+                              '🎸 Voglio Suonare sul Palco!',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.deepPurple,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              minimumSize: const Size(double.infinity, 30),
+                              elevation: 0,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -465,27 +512,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
             tooltip: 'Torna indietro',
           ),
           const Spacer(),
-
-          // ✅ PULSANTE GESTISCI BRANI (SOLO ADMIN)
-          if (isAdmin)
-            IconButton(
-              icon: const Icon(
-                Icons.playlist_add,
-                color: Colors.white,
-              ),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => EventSongsAssignment(
-                      event: _event!,
-                    ),
-                  ),
-                );
-              },
-              tooltip: 'Gestisci Brani',
-            ),
-
           IconButton(
             icon: const Icon(
               Icons.share,
@@ -495,6 +521,63 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
               // TODO: Condividi evento
             },
             tooltip: 'Condividi',
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ✅ Dialog per selezionare il brano e andare ai documenti
+  void _showSongSelectionDialog() {
+    if (_songs.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Nessun brano in scaletta'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('📄 Seleziona Brano per i Documenti'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: _songs.length,
+            itemBuilder: (context, index) {
+              final song = _songs[index];
+              return ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Colors.deepPurple.shade100,
+                  child: Text(
+                    '${index + 1}',
+                    style: TextStyle(
+                      color: Colors.deepPurple.shade700,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                title: Text(song.title),
+                subtitle: song.composer != null
+                    ? Text('Compositore: ${song.composer}')
+                    : null,
+                trailing: const Icon(Icons.folder_open, color: Colors.deepPurple),
+                onTap: () {
+                  Navigator.pop(context);
+                  _navigateToDocuments(song);
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
           ),
         ],
       ),

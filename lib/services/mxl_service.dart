@@ -5,84 +5,90 @@ import 'package:archive/archive.dart';
 import 'package:xml/xml.dart';
 
 class MxlService {
-  static const String MXL_EXTENSION = '.mxl';
-
-  // ✅ DECOMPRIME IL FILE MXL E RESTITUISCE IL CONTENUTO XML
+  /// Estrae il vero contenuto XML musicale da un file .mxl (ZIP)
   static Future<String?> extractXmlContent(String filePath) async {
     try {
-      final file = File(filePath);
-      if (!await file.exists()) {
-        print('❌ File non trovato: $filePath');
-        return null;
-      }
+      // 1. Leggi il file .mxl come bytes
+      final bytes = await File(filePath).readAsBytes();
 
-      final bytes = await file.readAsBytes();
+      // 2. Decomprimi lo ZIP
       final archive = ZipDecoder().decodeBytes(bytes);
 
-      // Cerca il file .xml all'interno dell'archivio
-      String? xmlContent;
-      for (final file in archive) {
-        if (file.isFile && file.name.endsWith('.xml')) {
-          xmlContent = utf8.decode(file.content as List<int>);
-          break;
+      // 3. 🔥 TROVA IL FILE GIUSTO (NON IL CONTAINER!)
+      String? targetXmlName;
+
+      // Prima prova a leggere il container per trovare il nome
+      final containerFile = archive.files.firstWhere(
+            (file) => file.name.endsWith('META-INF/container.xml'),
+        orElse: () => throw Exception('Container non trovato'),
+      );
+      if (containerFile.isFile) {
+        final containerContent = utf8.decode(containerFile.content);
+        final containerDoc = XmlDocument.parse(containerContent);
+
+        // Cerca l'attributo full-path
+        final rootfile = containerDoc.findAllElements('rootfile').firstOrNull;
+        if (rootfile != null) {
+          targetXmlName = rootfile.getAttribute('full-path');
         }
       }
 
-      return xmlContent;
+      // Se il container non ha dato il nome, cerca manualmente un file .xml
+      if (targetXmlName == null) {
+        targetXmlName = archive.files
+            .where((file) => file.name.endsWith('.xml') && !file.name.contains('container'))
+            .map((file) => file.name)
+            .firstOrNull;
+      }
+
+      // 4. Se non abbiamo trovato nulla, errore
+      if (targetXmlName == null) {
+        throw Exception('Impossibile trovare il file XML dentro il MXL');
+      }
+
+      // 5. Estrai e decodifica il file XML vero
+      final targetFile = archive.files.firstWhere(
+            (file) => file.name == targetXmlName,
+        orElse: () => throw Exception('File $targetXmlName non trovato'),
+      );
+
+      if (targetFile.isFile) {
+        return utf8.decode(targetFile.content);
+      }
+
+      return null;
     } catch (e) {
       print('❌ Errore estrazione MXL: $e');
       return null;
     }
   }
 
-  // ✅ ESTRAE METADATI DAL MUSICXML
+  /// Estrae i metadati (titolo, compositore) dall'XML
   static Map<String, String> extractMetadata(String xmlContent) {
     try {
       final document = XmlDocument.parse(xmlContent);
 
-      // Cerca titolo
-      final titleNode = document.findAllElements('work-title');
-      final title = titleNode.isNotEmpty ? titleNode.first.text : 'Senza titolo';
+      final title = document
+          .findAllElements('work-title')
+          .firstOrNull
+          ?.innerText ??
+          document.findAllElements('movement-title').firstOrNull?.innerText ??
+          '';
 
-      // Cerca compositore
-      final creatorNodes = document.findAllElements('creator');
-      String? composer;
-      for (final node in creatorNodes) {
-        if (node.getAttribute('type') == 'composer') {
-          composer = node.text;
-          break;
-        }
-      }
-
-      // Cerca parti strumentali
-      final partList = document.findAllElements('score-part');
-      final parts = partList.map((p) {
-        final partName = p.findAllElements('part-name');
-        return partName.isNotEmpty ? partName.first.text : 'Parte';
-      }).toList();
+      final composer = document
+          .findAllElements('creator')
+          .firstWhere(
+            (el) => el.getAttribute('type') == 'composer',
+        orElse: () => XmlElement(XmlName('empty')),
+      )
+          .innerText ?? '';
 
       return {
         'title': title,
-        'composer': composer ?? 'Sconosciuto',
-        'parts': parts.join(', '),
-        'partCount': parts.length.toString(),
+        'composer': composer,
       };
     } catch (e) {
-      print('❌ Errore parsing metadata: $e');
-      return {
-        'title': 'Errore lettura',
-        'composer': 'Sconosciuto',
-        'parts': 'N/A',
-        'partCount': '0',
-      };
+      return {};
     }
-  }
-
-  // ✅ SALVA IL FILE XML ESTRATTO
-  static Future<void> saveXmlContent(String filePath, String xmlContent) async {
-    final outputPath = filePath.replaceAll('.mxl', '.xml');
-    final file = File(outputPath);
-    await file.writeAsString(xmlContent);
-    print('✅ XML estratto salvato in: $outputPath');
   }
 }

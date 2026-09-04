@@ -1,10 +1,13 @@
 // lib/screens/admin/event_song_documents.dart
+
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import '../../services/database_service.dart';
 import '../../models/event_model.dart';
 import '../../models/document.dart';
+import '../../utils/performance_logger.dart';
 import '../document_viewer_screen.dart';
 import 'document_form_screen.dart';
 
@@ -35,20 +38,26 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
   @override
   void initState() {
     super.initState();
+    PerformanceLogger.info('EventSongDocumentsScreen inizializzato');
     _loadData();
   }
 
   Future<void> _loadData() async {
+    PerformanceLogger.start('_loadData');
+
     setState(() => _isLoading = true);
     try {
-      // 1. Carica i documenti già assegnati a questo evento-brano
       final assigned = await _db.getEventSongDocumentsWithDetails(widget.eventSongId);
-
-      // 2. Carica SOLO i documenti globali di questa canzone (non assegnati all'evento)
       final songDocuments = await _db.getDocumentsBySong(widget.songId);
 
-      // 3. Filtra i documenti già assegnati
-      final assignedIds = assigned.map((d) => d['document_id'] as String).toSet();
+      final assignedIds = <String>{};
+      for (var doc in assigned) {
+        final id = doc['document_id'];
+        if (id != null && id is String) {
+          assignedIds.add(id);
+        }
+      }
+
       final available = songDocuments.where((d) => !assignedIds.contains(d.id)).toList();
 
       setState(() {
@@ -56,8 +65,13 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         _availableDocuments = available;
         _isLoading = false;
       });
+
+      PerformanceLogger.info('Documenti caricati',
+          details: 'Assegnati: ${assigned.length}, Disponibili: ${available.length}');
+
     } catch (e) {
       setState(() => _isLoading = false);
+      PerformanceLogger.error('_loadData fallito', error: e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Errore: $e'),
@@ -65,10 +79,13 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         ),
       );
     }
+
+    PerformanceLogger.stop('_loadData');
   }
 
-  // ✅ METODO CORRETTO: accetta un parametro Document
   Future<void> _addDocument(Document doc) async {
+    PerformanceLogger.start('_addDocument');
+
     try {
       await _db.addDocumentToEventSong(widget.eventSongId, doc.id);
       await _loadData();
@@ -81,7 +98,11 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
           ),
         );
       }
+
+      PerformanceLogger.info('Documento aggiunto', details: doc.fileName);
+
     } catch (e) {
+      PerformanceLogger.error('_addDocument fallito', error: e);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -91,9 +112,13 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         );
       }
     }
+
+    PerformanceLogger.stop('_addDocument');
   }
 
   Future<void> _removeDocument(Map<String, dynamic> doc) async {
+    PerformanceLogger.start('_removeDocument');
+
     try {
       await _db.removeDocumentFromEventSong(
         widget.eventSongId,
@@ -108,7 +133,11 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
           ),
         );
       }
+
+      PerformanceLogger.info('Documento rimosso', details: doc['file_name']);
+
     } catch (e) {
+      PerformanceLogger.error('_removeDocument fallito', error: e);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -118,9 +147,13 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         );
       }
     }
+
+    PerformanceLogger.stop('_removeDocument');
   }
 
   void _viewDocument(Map<String, dynamic> doc) {
+    PerformanceLogger.start('_viewDocument');
+
     final document = Document(
       id: doc['document_id'] as String,
       docType: doc['doc_type'] ?? '',
@@ -139,36 +172,29 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         builder: (context) => DocumentViewerScreen(document: document),
       ),
     );
+
+    PerformanceLogger.info('Documento visualizzato', details: document.fileName);
+    PerformanceLogger.stop('_viewDocument');
   }
 
-  // ✅ METODO CORRETTO per creare un nuovo documento
   Future<void> _createNewDocument() async {
+    PerformanceLogger.start('_createNewDocument');
+
     try {
-      final dynamic result = await FilePicker.pickFiles(
+      final result = await FilePicker.platform.pickFiles(
         allowMultiple: false,
         type: FileType.custom,
         allowedExtensions: ['pdf', 'mxl', 'abc', 'mp3', 'wav', 'mid', 'kar', 'jpg', 'png', 'txt'],
       );
 
-      if (result == null) return;
+      if (result == null || result.files.isEmpty) return;
 
-      // Approccio più semplice
-      dynamic file;
-      if (result is List && result.isNotEmpty) {
-        file = result.first;
-      } else if (result.files != null && result.files.isNotEmpty) {
-        file = result.files.first;
-      } else {
-        file = result;
-      }
+      final file = result.files.first;
+      final filePath = file.path;
+      final fileName = file.name;
+      final fileSize = file.size;
 
-      if (file == null) return;
-
-      final String? filePath = file.path;
-      final String? fileName = file.name;
-      final int fileSize = file.size ?? 0;
-
-      if (filePath == null || fileName == null) {
+      if (filePath == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Errore: percorso file non valido'),
@@ -178,14 +204,143 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         return;
       }
 
-      // ... continua con il resto del codice
+      final extension = fileName.split('.').last.toLowerCase();
+      String docType = _getTypeFromExtension(extension);
+
+      Uint8List? content;
+      String storageMode = 'filesystem';
+
+      if (['mxl', 'abc', 'mid', 'kar'].contains(docType)) {
+        try {
+          final fileObj = File(filePath);
+          if (await fileObj.exists()) {
+            content = await fileObj.readAsBytes();
+            storageMode = 'blob';
+            print('📦 BLOB letto: ${content.length} bytes per $docType - $fileName');
+          }
+        } catch (e) {
+          print('❌ Errore lettura BLOB: $e');
+        }
+      }
+
+      final descriptionController = TextEditingController();
+      final titleController = TextEditingController(text: fileName);
+
+      final resultDialog = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('📄 Nuovo Documento'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  labelText: 'Nome file',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: descriptionController,
+                decoration: const InputDecoration(
+                  labelText: 'Descrizione (opzionale)',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Tipo: $docType',
+                style: TextStyle(
+                  color: Colors.deepPurple,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Dimensione: ${_formatFileSize(fileSize)}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Annulla'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (titleController.text.isNotEmpty) {
+                  Navigator.pop(context, true);
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Crea e Aggiungi'),
+            ),
+          ],
+        ),
+      );
+
+      if (resultDialog != true) return;
+
+      final document = Document(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        docType: docType,
+        fileName: titleController.text.trim(),
+        filePath: filePath,
+        fileSize: fileSize,
+        description: descriptionController.text.trim(),
+        isPublic: true,
+        uploadedBy: 'admin',
+        createdAt: DateTime.now().toIso8601String(),
+        content: content,
+        storageMode: storageMode,
+        songId: widget.songId,
+      );
+
+      await _db.insertDocument(document);
+      // await _db.addDocumentToSong(document.id, widget.songId);
+      // await _loadData();
+      await _db.addDocumentToEventSong(
+        widget.eventSongId,
+        document.id,
+        orderIndex: _assignedDocuments.length,
+      );
+      await _loadData();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Documento creato e aggiunto all\'evento!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+
+      PerformanceLogger.info('Documento creato', details: document.fileName);
+
     } catch (e) {
-      // ...
+      PerformanceLogger.error('_createNewDocument fallito', error: e);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
+
+    PerformanceLogger.stop('_createNewDocument');
   }
 
   String _getTypeFromExtension(String extension) {
-    switch (extension) {
+    switch (extension.toLowerCase()) {
       case 'pdf': return 'pdf';
       case 'mxl': return 'mxl';
       case 'xml': return 'mxl';
@@ -410,7 +565,6 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                           IconButton(
                             icon: const Icon(Icons.visibility, color: Colors.blue),
                             onPressed: () {
-                              // Visualizza il documento
                               final docMap = {
                                 'document_id': doc.id,
                                 'file_name': doc.fileName,
@@ -429,7 +583,7 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                               Icons.add_circle,
                               color: Colors.green,
                             ),
-                            onPressed: () => _addDocument(doc), // ✅ Ora passa il documento
+                            onPressed: () => _addDocument(doc),
                             tooltip: 'Aggiungi a questo evento',
                           ),
                         ],

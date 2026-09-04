@@ -1,18 +1,22 @@
 // lib/screens/admin/document_form_screen.dart
+
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../models/document.dart';
 import '../../services/database_service.dart';
+import '../../utils/performance_logger.dart';
 
 class DocumentFormScreen extends StatefulWidget {
   final Document? document;
   final String? songId;
 
   const DocumentFormScreen({
-    super.key,
+    Key? key,
     this.document,
     this.songId,
-  });
+  }) : super(key: key);
 
   @override
   State<DocumentFormScreen> createState() => _DocumentFormScreenState();
@@ -22,12 +26,15 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
+  final DatabaseService _db = DatabaseService();
+
   String? _selectedType;
   String? _selectedFilePath;
   String? _fileName;
   int _fileSize = 0;
   bool _isPublic = true;
   bool _isLoading = false;
+  Uint8List? _fileBytes;
 
   final List<String> _documentTypes = [
     'pdf',
@@ -44,13 +51,15 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   @override
   void initState() {
     super.initState();
+    PerformanceLogger.info('DocumentFormScreen inizializzato');
+
     if (widget.document != null) {
       _titleController.text = widget.document!.fileName;
       _descriptionController.text = widget.document!.description;
       _selectedType = widget.document!.docType;
       _selectedFilePath = widget.document!.filePath;
       _fileName = widget.document!.fileName;
-      _fileSize = widget.document!.fileSize;
+      _fileSize = widget.document!.fileSize ?? 0;
       _isPublic = widget.document!.isPublic;
     }
   }
@@ -63,46 +72,42 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   }
 
   Future<void> _pickFile() async {
+    PerformanceLogger.start('_pickFile');
+
     try {
-      final dynamic result = await FilePicker.pickFiles(
+      final result = await FilePicker.platform.pickFiles(
         allowMultiple: false,
         type: FileType.custom,
         allowedExtensions: _getAllowedExtensions(),
       );
 
-      // Approccio più semplice: controlla se result ha una proprietà 'files'
-      dynamic file;
-      if (result != null) {
-        if (result is List && result.isNotEmpty) {
-          file = result.first;
-        } else if (result.files != null && result.files.isNotEmpty) {
-          file = result.files.first;
-        } else {
-          file = result;
-        }
-      }
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        final bytes = file.bytes;
+        final path = file.path;
+        final name = file.name;
+        final size = file.size;
 
-      if (file != null) {
-        final String? path = file.path;
-        final String? name = file.name;
-        final int size = file.size ?? 0;
+        setState(() {
+          _selectedFilePath = path;
+          _fileName = name;
+          _fileSize = size;
+          if (bytes != null) {
+            _fileBytes = bytes;
+          }
+          if (_titleController.text.isEmpty) {
+            _titleController.text = name;
+          }
+          if (_selectedType == null || _selectedType!.isEmpty) {
+            final extension = name.split('.').last.toLowerCase();
+            _selectedType = _getTypeFromExtension(extension) ?? 'unknown';
+          }
+        });
 
-        if (path != null && name != null) {
-          setState(() {
-            _selectedFilePath = path;
-            _fileName = name;
-            _fileSize = size;
-            if (_titleController.text.isEmpty) {
-              _titleController.text = name;
-            }
-            if (_selectedType == null || _selectedType!.isEmpty) {
-              final extension = name.split('.').last.toLowerCase();
-              _selectedType = _getTypeFromExtension(extension);
-            }
-          });
-        }
+        PerformanceLogger.info('File selezionato', details: '$name (${_formatFileSize(size)})');
       }
     } catch (e) {
+      PerformanceLogger.error('_pickFile fallito', error: e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Errore nella selezione del file: $e'),
@@ -110,6 +115,8 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         ),
       );
     }
+
+    PerformanceLogger.stop('_pickFile');
   }
 
   List<String> _getAllowedExtensions() {
@@ -137,8 +144,8 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
     }
   }
 
-  String? _getTypeFromExtension(String extension) {
-    switch (extension) {
+  String _getTypeFromExtension(String extension) {
+    switch (extension.toLowerCase()) {
       case 'pdf':
         return 'pdf';
       case 'mxl':
@@ -163,7 +170,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
       case 'txt':
         return 'txt';
       default:
-        return null;
+        return 'unknown';
     }
   }
 
@@ -193,6 +200,8 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   }
 
   void _saveDocument() async {
+    PerformanceLogger.start('_saveDocument');
+
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -212,24 +221,55 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
     });
 
     try {
+      final docType = _selectedType ?? 'unknown';
+      final fileName = _fileName ?? _titleController.text;
+      final filePath = _selectedFilePath!;
+
+      // 🔥 LEGGI IL FILE COME BLOB PER MXL/ABC/MIDI/KAR
+      Uint8List? content;
+      String storageMode = 'filesystem';
+
+      if (['mxl', 'abc', 'mid', 'kar'].contains(docType)) {
+        try {
+          if (_fileBytes != null) {
+            content = _fileBytes;
+            storageMode = 'blob';
+            print('📦 BLOB da memoria: ${content!.length} bytes per $docType - $fileName');
+          } else {
+            final file = File(filePath);
+            if (await file.exists()) {
+              content = await file.readAsBytes();
+              storageMode = 'blob';
+              print('📦 BLOB letto da file: ${content.length} bytes per $docType - $fileName');
+            } else {
+              print('⚠️ File non trovato: $filePath');
+            }
+          }
+        } catch (e) {
+          print('❌ Errore lettura BLOB: $e');
+        }
+      }
+
       final document = Document(
         id: widget.document?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
-        docType: _selectedType ?? 'unknown',
-        fileName: _fileName ?? _titleController.text,
-        filePath: _selectedFilePath!,
+        docType: docType,
+        fileName: fileName,
+        filePath: filePath,
         fileSize: _fileSize,
         description: _descriptionController.text,
         isPublic: _isPublic,
         uploadedBy: 'admin',
         createdAt: DateTime.now().toIso8601String(),
         updatedAt: null,
+        content: content,
+        storageMode: storageMode,  // 🔥 SALVA storage_mode
+        songId: widget.songId,
       );
 
-      // Usa l'istanza di DatabaseService
-      final db = DatabaseService();
-
       if (widget.document == null) {
-        await db.insertDocument(document);
+        await _db.insertDocument(document);
+        PerformanceLogger.info('Documento creato',
+            details: '${document.fileName} (${storageMode})');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Documento aggiunto con successo'),
@@ -237,7 +277,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
           ),
         );
       } else {
-        await db.updateDocument(document);
+        await _db.updateDocument(document);
+        PerformanceLogger.info('Documento aggiornato',
+            details: '${document.fileName} (${storageMode})');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Documento aggiornato con successo'),
@@ -247,7 +289,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
       }
 
       Navigator.pop(context, true);
+
     } catch (e) {
+      PerformanceLogger.error('_saveDocument fallito', error: e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Errore: $e'),
@@ -259,6 +303,8 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         _isLoading = false;
       });
     }
+
+    PerformanceLogger.stop('_saveDocument');
   }
 
   @override
@@ -303,6 +349,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                       _selectedFilePath = null;
                       _fileName = null;
                       _fileSize = 0;
+                      _fileBytes = null;
                     });
                   },
                   validator: (value) {
@@ -383,6 +430,34 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
+
+                // Informazioni BLOB per i tipi strutturati
+                if (_selectedType != null &&
+                    ['mxl', 'abc', 'mid', 'kar'].contains(_selectedType))
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.info_outline, size: 16, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '💾 Il file verrà salvato come BLOB nel database per una gestione ottimale',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.blue.shade700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 8),
 
                 // Pubblico
                 SwitchListTile(

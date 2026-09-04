@@ -361,7 +361,7 @@ class _AdminDocumentsState extends State<AdminDocuments> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         Text(
-                          '${_formatFileSize(doc.fileSize)} • ${doc.isPublic ? "Pubblico" : "Privato"}',
+                          '${_formatFileSize(doc.fileSize ?? 0)} • ${doc.isPublic ? "Pubblico" : "Privato"}',
                           style: TextStyle(
                             fontSize: 11,
                             color: Colors.grey.shade400,

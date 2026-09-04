@@ -1,9 +1,9 @@
 // lib/screens/mxl_viewer_screen.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:audioplayers/audioplayers.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:open_filex/open_filex.dart';
 import '../models/document.dart';
 import '../services/mxl_service.dart';
 
@@ -20,13 +20,10 @@ class MxlViewerScreen extends StatefulWidget {
 }
 
 class _MxlViewerScreenState extends State<MxlViewerScreen> {
-  final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isLoading = true;
-  bool _isPlaying = false;
   String? _xmlContent;
   String? _error;
   Map<String, String> _metadata = {};
-  bool _isExtracted = false;
 
   @override
   void initState() {
@@ -34,22 +31,24 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
     _loadMxl();
   }
 
-  @override
-  void dispose() {
-    _audioPlayer.dispose();
-    super.dispose();
-  }
-
   Future<void> _loadMxl() async {
     setState(() => _isLoading = true);
     try {
-      final xmlContent = await MxlService.extractXmlContent(widget.document.filePath);
+      final filePath = widget.document.filePath;
+      if (filePath == null) {
+        setState(() {
+          _error = 'Errore: Percorso file mancante';
+        });
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      final xmlContent = await MxlService.extractXmlContent(filePath);
 
       if (xmlContent != null) {
         setState(() {
           _xmlContent = xmlContent;
           _metadata = MxlService.extractMetadata(xmlContent);
-          _isExtracted = true;
         });
       } else {
         setState(() {
@@ -64,6 +63,104 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
     setState(() => _isLoading = false);
   }
 
+  // 🔥 INIETTA L'XML E PREME AUTOMATICAMENTE "GENERA SPARTITO" (per estrarre i brani singoli)
+  Future<void> _openInBrowser() async {
+    try {
+      // 1. Percorso del tuo HTML originale
+      final htmlPath = 'C:/musica_eventi_e_documenti/assets/html/spartito-viewer.html';
+      final sourceHtmlFile = File(htmlPath);
+      if (!await sourceHtmlFile.exists()) {
+        throw Exception('File HTML non trovato: $htmlPath');
+      }
+
+      // 2. Leggi il contenuto del file HTML
+      final htmlContent = await sourceHtmlFile.readAsString();
+
+      // 3. Escapa l'XML e iniettalo nella textarea
+      final escapedXml = (_xmlContent ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;');
+
+      final filledHtml = htmlContent.replaceFirst(
+        RegExp(r'(?<=<textarea id="inputText"[^>]*>)(.*?)(?=</textarea>)', dotAll: true),
+        escapedXml,
+      );
+
+      // 4. Aggiungi uno script che preme automaticamente "Genera spartito"
+      final scriptToAdd = '''
+      <script>
+        setTimeout(function() {
+          var btn = document.getElementById('processBtn');
+          if (btn) {
+            btn.click();
+          }
+        }, 1000);
+      </script>
+      ''';
+
+      final finalHtml = filledHtml.replaceFirst('</body>', scriptToAdd + '</body>');
+
+      // 5. Salva e apri nel browser
+      final appDocDir = await getApplicationDocumentsDirectory();
+      final safeDir = Directory('${appDocDir.path}/viewers');
+      if (!await safeDir.exists()) {
+        await safeDir.create(recursive: true);
+      }
+
+      final outputFile = File('${safeDir.path}/mxl_viewer_${DateTime.now().millisecondsSinceEpoch}.html');
+      await outputFile.writeAsString(finalHtml, flush: true);
+
+      // 6. Apri nel browser
+      if (await canLaunchUrl(Uri.file(outputFile.path))) {
+        await launchUrl(Uri.file(outputFile.path), mode: LaunchMode.externalApplication);
+      } else {
+        throw 'Impossibile aprire il browser';
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // 🔥 APRI CON APP ESTERNA (Finale)
+  Future<void> _openWithDefaultApp() async {
+    try {
+      final file = File(widget.document.filePath ?? '');
+      if (await file.exists()) {
+        final result = await OpenFilex.open(file.path);
+        if (result.type != ResultType.done) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ Errore apertura: ${result.message}'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('File non trovato'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Errore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -73,14 +170,14 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: _downloadMxl,
-            tooltip: 'Scarica MXL',
-          ),
-          IconButton(
             icon: const Icon(Icons.open_in_browser),
             onPressed: _openInBrowser,
             tooltip: 'Apri nel browser',
+          ),
+          IconButton(
+            icon: const Icon(Icons.open_in_new),
+            onPressed: _openWithDefaultApp,
+            tooltip: 'Apri con app predefinita (Finale)',
           ),
         ],
       ),
@@ -110,11 +207,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
           children: [
             Icon(Icons.error_outline, size: 64, color: Colors.red),
             const SizedBox(height: 16),
-            Text(
-              _error!,
-              style: const TextStyle(fontSize: 16),
-              textAlign: TextAlign.center,
-            ),
+            Text(_error!, style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: _loadMxl,
@@ -123,9 +216,9 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: _openInBrowser,
-              icon: const Icon(Icons.open_in_browser),
-              label: const Text('Apri il file direttamente'),
+              onPressed: _openWithDefaultApp,
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Apri con Finale'),
             ),
           ],
         ),
@@ -136,7 +229,6 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
   Widget _buildContentView() {
     return Column(
       children: [
-        // METADATI
         Container(
           padding: const EdgeInsets.all(16),
           color: Colors.deepPurple.shade50,
@@ -150,44 +242,19 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                   children: [
                     Text(
                       '🎵 ${_metadata['title'] ?? widget.document.fileName}',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                     Text(
                       '✍️ ${_metadata['composer'] ?? 'Compositore sconosciuto'}',
                       style: const TextStyle(fontSize: 14),
                     ),
-                    Text(
-                      '🎹 Parti: ${_metadata['parts'] ?? 'N/A'}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                    ),
                   ],
                 ),
               ),
-              if (_metadata['partCount'] != null)
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.deepPurple,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '${_metadata['partCount']} parti',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
         const Divider(),
-
-        // AZIONI PRINCIPALI
         Expanded(
           child: Center(
             child: Padding(
@@ -195,11 +262,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.library_music,
-                    size: 80,
-                    color: Colors.deepPurple.shade300,
-                  ),
+                  Icon(Icons.library_music, size: 80, color: Colors.deepPurple.shade300),
                   const SizedBox(height: 16),
                   Text(
                     '🎼 Spartito MusicXML',
@@ -210,65 +273,32 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Text(
-                    '${widget.document.fileName}',
-                    style: TextStyle(color: Colors.grey.shade600),
-                  ),
+                  Text('${widget.document.fileName}', style: TextStyle(color: Colors.grey.shade600)),
                   const SizedBox(height: 16),
                   Wrap(
                     spacing: 12,
                     runSpacing: 12,
                     alignment: WrapAlignment.center,
                     children: [
-                      _buildActionButton(
-                        icon: Icons.open_in_browser,
-                        label: '🌐 Apri MXL',
-                        onTap: _openInBrowser,
-                        color: Colors.blue,
+                      ElevatedButton.icon(
+                        onPressed: _openInBrowser,
+                        icon: const Icon(Icons.open_in_browser),
+                        label: const Text('🌐 Apri nel browser'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
                       ),
-                      _buildActionButton(
-                        icon: Icons.download,
-                        label: '⬇️ Scarica MXL',
-                        onTap: _downloadMxl,
-                        color: Colors.green,
-                      ),
-                      _buildActionButton(
-                        icon: Icons.text_snippet,
-                        label: '📄 Estrai XML',
-                        onTap: _extractXml,
-                        color: Colors.orange,
+                      ElevatedButton.icon(
+                        onPressed: _openWithDefaultApp,
+                        icon: const Icon(Icons.open_in_new),
+                        label: const Text('🔧 Apri con Finale'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                        ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 24),
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: Column(
-                      children: [
-                        const Text(
-                          '💡 Suggerimenti',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '• Apri il file MXL con MuseScore, Sibelius o Dorico\n'
-                              '• Estrai il contenuto XML per visualizzare i dati\n'
-                              '• Scarica il file per usarlo offline',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade700,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
                   ),
                 ],
               ),
@@ -276,91 +306,6 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildActionButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    Color? color,
-  }) {
-    return ElevatedButton.icon(
-      onPressed: onTap,
-      icon: Icon(icon, size: 18),
-      label: Text(label),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color ?? Colors.deepPurple,
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-        ),
-      ),
-    );
-  }
-
-  // ============================================
-  // METODI AZIONE
-  // ============================================
-
-  void _downloadMxl() async {
-    try {
-      final file = File(widget.document.filePath);
-      if (await file.exists()) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('⬇️ Download MXL iniziato...'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      _showError('Errore download: $e');
-    }
-  }
-
-  void _openInBrowser() async {
-    try {
-      final filePath = widget.document.filePath;
-      if (kIsWeb) {
-        _showMessage('🌐 Apertura nel browser...');
-      } else {
-        await Process.run('explorer', [filePath]);
-        _showMessage('✅ Apertura con app predefinita');
-      }
-    } catch (e) {
-      _showError('Errore apertura: $e');
-    }
-  }
-
-  void _extractXml() async {
-    try {
-      if (_xmlContent != null) {
-        await MxlService.saveXmlContent(widget.document.filePath, _xmlContent!);
-        _showMessage('✅ XML estratto in: ${widget.document.filePath.replaceAll('.mxl', '.xml')}');
-      }
-    } catch (e) {
-      _showError('Errore estrazione XML: $e');
-    }
-  }
-
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('❌ $message'),
-        backgroundColor: Colors.red,
-        duration: const Duration(seconds: 3),
-      ),
     );
   }
 }

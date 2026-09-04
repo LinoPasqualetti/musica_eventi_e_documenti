@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ABC Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/abcjs@6.0.0/dist/abcjs-basic-min.js">
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 16px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+        }
+        #container {
+            max-width: 1000px;
+            width: 100%;
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        #title {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 16px;
+            color: #333;
+            text-align: center;
+        }
+        #abc-container {
+            padding: 16px;
+            background: #fafafa;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            min-height: 200px;
+            overflow: auto;
+        }
+        #abc-container svg {
+            max-width: 100%;
+            height: auto;
+        }
+        #controls {
+            margin-top: 16px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-play {
+            background: #4caf50;
+            color: white;
+        }
+        .btn-play:hover {
+            background: #66bb6a;
+            transform: scale(1.02);
+        }
+        .btn-play.playing {
+            background: #ff9800;
+        }
+        .btn-stop {
+            background: #f44336;
+            color: white;
+        }
+        .btn-stop:hover {
+            background: #ef5350;
+            transform: scale(1.02);
+        }
+        #status {
+            margin-top: 12px;
+            padding: 8px;
+            text-align: center;
+            font-size: 14px;
+            color: #666;
+        }
+        #error {
+            color: #d32f2f;
+            padding: 12px;
+            background: #ffebee;
+            border-radius: 8px;
+            text-align: center;
+            margin-top: 8px;
+            display: none;
+        }
+        .tune-selector {
+            margin: 12px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            justify-content: center;
+        }
+        .tune-btn {
+            padding: 4px 12px;
+            border: 2px solid #673ab7;
+            border-radius: 16px;
+            background: transparent;
+            color: #673ab7;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .tune-btn.active {
+            background: #673ab7;
+            color: white;
+        }
+        .tune-btn:hover {
+            background: #7c4dff;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="title">🎵 Caricamento...</div>
+        <div id="tune-selector" class="tune-selector"></div>
+        <div id="abc-container"></div>
+        <div id="controls">
+            <button class="btn btn-play" id="playBtn" onclick="togglePlay()">▶ Play</button>
+            <button class="btn btn-stop" onclick="stopPlayback()">⏹ Stop</button>
+        </div>
+        <div id="status">⏸ In attesa</div>
+        <div id="error"></div>
+    </div>
+
+    <script>
+        var abcString = '';
+        var visualObj = null;
+        var synth = null;
+        var isPlaying = false;
+        var currentTuneIndex = 0;
+        var tunes = [];
+        var tuneTitles = [];
+
+        function showError(msg) {
+            var errorDiv = document.getElementById('error');
+            errorDiv.style.display = 'block';
+            errorDiv.innerText = '❌ ' + msg;
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function updateStatus(text, color) {
+            var status = document.getElementById('status');
+            status.innerText = text;
+            if (color) status.style.color = color;
+        }
+
+        function extractTunes(fullAbc) {
+            var lines = fullAbc.split('\n');
+            var result = [];
+            var titles = [];
+            var current = [];
+            var currentTitle = '';
+            var inTune = false;
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.trim().startsWith('X:')) {
+                    if (inTune && current.length > 0) {
+                        result.push(current.join('\n'));
+                        titles.push(currentTitle || 'Brano ' + result.length);
+                    }
+                    current = [];
+                    currentTitle = '';
+                    inTune = true;
+                }
+                if (inTune) {
+                    if (line.trim().startsWith('T:') && !currentTitle) {
+                        currentTitle = line.trim().substring(2).trim();
+                    }
+                    current.push(line);
+                }
+            }
+            if (inTune && current.length > 0) {
+                result.push(current.join('\n'));
+                titles.push(currentTitle || 'Brano ' + result.length);
+            }
+            return { tunes: result, titles: titles };
+        }
+
+        function renderTune(tuneContent, index) {
+            try {
+                hideError();
+                document.getElementById('abc-container').innerHTML = '';
+
+                visualObj = ABCJS.renderAbc('abc-container', tuneContent, {
+                    responsive: 'resize',
+                    staffwidth: 700,
+                    scale: 1.0,
+                    paddingtop: 10,
+                    paddingbottom: 10,
+                    add_classes: true,
+                    generateParts: true,
+                    generatePartNames: true,
+                    generatePlayback: true,
+                });
+
+                if (!visualObj || visualObj.length === 0) {
+                    showError('Errore: ABC non valido o non renderizzabile');
+                    updateStatus('❌ Errore', '#d32f2f');
+                } else {
+                    var title = tuneTitles[index] || 'Brano ' + (index + 1);
+                    document.getElementById('title').innerText = '🎵 ' + title;
+                    updateStatus('✅ Spartito caricato', '#4caf50');
+                }
+            } catch (e) {
+                showError('Errore render: ' + e.message);
+                console.error('ABC render error:', e);
+            }
+        }
+
+        function initTuneSelector() {
+            var selector = document.getElementById('tune-selector');
+            selector.innerHTML = '';
+            if (tunes.length <= 1) {
+                selector.style.display = 'none';
+                return;
+            }
+            selector.style.display = 'flex';
+
+            for (var i = 0; i < tunes.length; i++) {
+                var btn = document.createElement('button');
+                btn.className = 'tune-btn' + (i === 0 ? ' active' : '');
+                var title = tuneTitles[i] || 'Brano ' + (i + 1);
+                btn.textContent = title.length > 25 ? title.substring(0, 22) + '...' : title;
+                btn.setAttribute('data-index', i);
+                btn.onclick = function(e) {
+                    var idx = parseInt(this.getAttribute('data-index'));
+                    var btns = document.querySelectorAll('.tune-btn');
+                    btns.forEach(function(b) { b.classList.remove('active'); });
+                    this.classList.add('active');
+                    currentTuneIndex = idx;
+                    renderTune(tunes[idx], idx);
+                    stopPlayback();
+                };
+                selector.appendChild(btn);
+            }
+        }
+
+        // Esponi la funzione per impostare l'ABC
+        function setAbcContent(content) {
+            abcString = content;
+
+            if (!abcString || abcString.trim() === '') {
+                showError('Contenuto ABC vuoto o non valido');
+                return;
+            }
+
+            try {
+                var extracted = extractTunes(abcString);
+                tunes = extracted.tunes;
+                tuneTitles = extracted.titles;
+
+                if (tunes.length === 0) {
+                    showError('Nessun brano trovato nel file ABC');
+                    return;
+                }
+
+                initTuneSelector();
+                renderTune(tunes[0], 0);
+                document.getElementById('title').innerText = '🎵 ' + (tuneTitles[0] || 'Brano 1');
+
+            } catch (e) {
+                showError('Errore: ' + e.message);
+                console.error('Init error:', e);
+            }
+        }
+
+        function togglePlay() {
+            if (isPlaying) {
+                stopPlayback();
+                return;
+            }
+
+            if (!visualObj || visualObj.length === 0) {
+                alert('Nessuna musica da suonare');
+                return;
+            }
+
+            var playBtn = document.getElementById('playBtn');
+            var currentTune = tunes[currentTuneIndex] || abcString;
+
+            try {
+                if (!synth) {
+                    synth = new ABCJS.synth.SynthController();
+                }
+
+                // Carica e riproduci
+                synth.load('/',
+                    function() {
+                        var midiData = synth.prepare(currentTune);
+                        synth.prime(midiData);
+                        synth.start();
+                        isPlaying = true;
+                        playBtn.textContent = '⏸ Pausa';
+                        playBtn.classList.add('playing');
+                        updateStatus('▶ Riproduzione in corso...', '#4caf50');
+                    },
+                    function(error) {
+                        console.error('Errore MIDI:', error);
+                        alert('Errore nel caricamento del MIDI: ' + error);
+                        isPlaying = false;
+                        playBtn.textContent = '▶ Play';
+                        playBtn.classList.remove('playing');
+                    }
+                );
+            } catch (e) {
+                console.error('Errore riproduzione:', e);
+                alert('Errore nella riproduzione: ' + e.message);
+                isPlaying = false;
+                playBtn.textContent = '▶ Play';
+                playBtn.classList.remove('playing');
+            }
+        }
+
+        function stopPlayback() {
+            try {
+                if (synth) {
+                    synth.stop();
+                }
+                isPlaying = false;
+                var playBtn = document.getElementById('playBtn');
+                playBtn.textContent = '▶ Play';
+                playBtn.classList.remove('playing');
+                updateStatus('⏸ Fermo', '#333');
+            } catch (e) {
+                console.log('Stop error:', e);
+            }
+        }
+
+        // Riassegna le funzioni globali
+        window.setAbcContent = setAbcContent;
+        window.togglePlay = togglePlay;
+        window.stopPlayback = stopPlayback;
+
+        console.log('🎵 ABC Viewer loaded');
+    </script>
+</body>
+</html>

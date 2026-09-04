@@ -1,39 +1,47 @@
 // lib/screens/document_viewer_screen.dart
-import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:audioplayers/audioplayers.dart';
+
 import 'dart:io';
-import 'package:open_file/open_file.dart';
+import 'package:flutter/material.dart';
+import 'package:audioplayers/audioplayers.dart'; // Per MP3
+import 'package:open_filex/open_filex.dart'; // Per aprire file con app predefinita
+import 'package:path_provider/path_provider.dart'; // Per BLOB
 import '../models/document.dart';
+import '../services/database_service.dart';
+import '../services/document_file_resolver.dart';
+import '../utils/performance_logger.dart';
+
+// 🔥 IMPORT DELLE SCHERMATE INTERNE
+import 'abc_viewer_screen.dart'; // Richiede filePath e fileName
 import 'mxl_viewer_screen.dart';
-import 'midi_player_screen.dart';
-import 'abc_viewer_screen.dart';  // <-- NUOVO IMPORT
+
 
 class DocumentViewerScreen extends StatefulWidget {
   final Document document;
 
-  const DocumentViewerScreen({
-    Key? key,
-    required this.document,
-  }) : super(key: key);
+  const DocumentViewerScreen({Key? key, required this.document}) : super(key: key);
 
   @override
   State<DocumentViewerScreen> createState() => _DocumentViewerScreenState();
 }
 
 class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
+  final DatabaseService _db = DatabaseService();
   final AudioPlayer _audioPlayer = AudioPlayer();
-  bool _isPlaying = false;
-  Duration _duration = Duration.zero;
-  Duration _position = Duration.zero;
-  String? _audioError;
-  bool _isLoading = false;
+  bool _isLoading = true;
+  String? _filePath;
+  String? _error;
+  bool _isMidi = false;
+  bool _isAudio = false;
+  bool _isImage = false;
+  bool _isPdf = false;
+  bool _isText = false;
+  bool _isStructured = false;
 
   @override
   void initState() {
     super.initState();
-    _checkFile();
-    _setupAudioListeners();
+    PerformanceLogger.info('DocumentViewerScreen inizializzato');
+    _resolveDocumentPath();
   }
 
   @override
@@ -42,73 +50,57 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     super.dispose();
   }
 
-  void _setupAudioListeners() {
-    // Ascolta la durata del brano
-    _audioPlayer.onDurationChanged.listen((duration) {
-      if (mounted) {
-        setState(() {
-          _duration = duration;
-        });
-      }
+  Future<void> _resolveDocumentPath() async {
+    PerformanceLogger.start('_resolveDocumentPath');
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
     });
 
-    // Ascolta la posizione durante la riproduzione
-    _audioPlayer.onPositionChanged.listen((position) {
-      if (mounted) {
-        setState(() {
-          _position = position;
-        });
-      }
-    });
+    try {
+      // Verifica il tipo di documento
+      final docType = widget.document.docType.toLowerCase();
+      _isMidi = ['mid', 'kar'].contains(docType);
+      _isAudio = ['audio_mp3', 'audio_wav', 'mp3', 'wav'].contains(docType);
+      _isImage = ['image', 'jpg', 'jpeg', 'png', 'gif', 'svg'].contains(docType);
+      _isPdf = docType == 'pdf';
+      _isText = ['txt', 'abc'].contains(docType);
+      _isStructured = ['mxl', 'abc', 'mid', 'kar'].contains(docType);
 
-    // Ascolta il completamento della riproduzione
-    _audioPlayer.onPlayerComplete.listen((event) {
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-          _position = Duration.zero;
-          _isLoading = false;
-        });
-      }
-    });
+      // ✅ Gestione BLOB e Filesystem tramite resolver
+      final resolvedDocument = await DocumentFileResolver.resolve(widget.document);
 
-    // Ascolta gli errori - usando onLog per debug
-    _audioPlayer.onLog.listen((log) {
-      print('🎵 Audio log: $log');
-    });
-
-    // Monitora lo stato del player
-    _audioPlayer.onPlayerStateChanged.listen((state) {
-      print('🎵 Player state: $state');
-      if (mounted) {
-        setState(() {
-          if (state == PlayerState.stopped) {
-            _isPlaying = false;
+      if (resolvedDocument.filePath != null) {
+        final path = resolvedDocument.filePath!;
+        final file = File(path);
+        if (await file.exists()) {
+          setState(() {
+            _filePath = path;
             _isLoading = false;
-          } else if (state == PlayerState.playing) {
-            _isPlaying = true;
-            _isLoading = false;
-          } else if (state == PlayerState.paused) {
-            _isPlaying = false;
-          }
-        });
+          });
+          PerformanceLogger.info('File trovato', details: path);
+          PerformanceLogger.stop('_resolveDocumentPath');
+          return;
+        }
       }
-    });
-  }
 
-  void _checkFile() {
-    final filePath = widget.document.filePath;
-    final exists = File(filePath).existsSync();
+      // Se non trovato, mostra errore
+      setState(() {
+        _error = 'File non trovato: ${widget.document.fileName}';
+        _isLoading = false;
+      });
+      PerformanceLogger.error('File non trovato', details: widget.document.fileName);
 
-    // Per i file audio, verifica che il file esista
-    if (widget.document.docType == 'audio_mp3' ||
-        widget.document.docType == 'audio_wav') {
-      if (!exists) {
-        setState(() {
-          _audioError = 'File audio non trovato: $filePath';
-        });
-      }
+    } catch (e) {
+      setState(() {
+        _error = 'Errore: $e';
+        _isLoading = false;
+      });
+      PerformanceLogger.error('_resolveDocumentPath fallito', error: e);
     }
+
+    PerformanceLogger.stop('_resolveDocumentPath');
   }
 
   @override
@@ -120,622 +112,344 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: () => _downloadDocument(),
-            tooltip: 'Download',
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () => _shareDocument(),
-            tooltip: 'Condividi',
-          ),
-          IconButton(
-            icon: const Icon(Icons.open_in_browser),
-            onPressed: () => _openWithDefaultApp(),
-            tooltip: 'Apri con app predefinita',
+            icon: const Icon(Icons.info_outline),
+            onPressed: _showDocumentInfo,
+            tooltip: 'Informazioni documento',
           ),
         ],
       ),
-      body: _buildContent(),
+      body: _buildBody(),
     );
   }
 
-  Widget _buildContent() {
-    switch (widget.document.docType) {
-      case 'pdf':
-        return _buildPdfViewer();
-      case 'mxl':
-      // Visualizzazione MXL con conversione integrata
-        return MxlViewerScreen(document: widget.document);
-      case 'abc':
-      // Visualizzazione ABC integrata con abcjs
-        return AbcViewerScreen(
-          filePath: widget.document.filePath,
-          fileName: widget.document.fileName,
-        );
-      case 'audio_mp3':
-      case 'audio_wav':
-        return _buildAudioPlayer();
-      case 'mid':
-      case 'kar':
-        return MidiPlayerScreen(document: widget.document);
-      case 'image':
-        return _buildImageViewer();
-      default:
-        return _buildDefaultViewer();
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
     }
+
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 48, color: Colors.red),
+            const SizedBox(height: 16),
+            Text(_error!, textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: () => Navigator.pop(context), child: const Text('Torna indietro')),
+          ],
+        ),
+      );
+    }
+
+    if (_filePath == null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.file_present, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text('Documento non disponibile'),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: () => Navigator.pop(context), child: const Text('Torna indietro')),
+          ],
+        ),
+      );
+    }
+
+    // Mostra il visualizzatore appropriato in base al tipo
+    if (_isImage) return _buildImageViewer();
+    if (_isAudio) return _buildAudioViewer();
+    if (_isPdf) return _buildPdfViewer();
+    if (_isMidi) return _buildMidiViewer();
+    if (_isStructured) return _buildStructuredViewer(); // Per MXL e ABC
+    if (_isText) return _buildTextViewer();
+    return _buildGenericViewer();
   }
 
-  // ============================================
-  // PLAYER AUDIO - VERSIONE CORRETTA
-  // ============================================
-
-  Widget _buildAudioPlayer() {
-    final filePath = widget.document.filePath;
-    final exists = File(filePath).existsSync();
-
-    // Se il file non esiste, mostra errore
-    if (!exists) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            const Text(
-              'File audio non trovato',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Percorso: $filePath',
-              style: TextStyle(color: Colors.grey.shade600),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => _openWithDefaultApp(),
-              icon: const Icon(Icons.open_in_browser),
-              label: const Text('Apri con app predefinita'),
-            ),
-          ],
-        ),
-      );
-    }
-
-    // Se c'è un errore di riproduzione
-    if (_audioError != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.warning_amber, size: 64, color: Colors.orange),
-            const SizedBox(height: 16),
-            Text(
-              'Errore audio',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _audioError!,
-              style: TextStyle(color: Colors.grey.shade600),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _audioError = null;
-                });
-                _playAudio();
-              },
-              icon: const Icon(Icons.refresh),
-              label: const Text('Riprova'),
-            ),
-          ],
-        ),
-      );
-    }
-
+  // 🎵 VISUALIZZATORE AUDIO
+  Widget _buildAudioViewer() {
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Icona animata durante la riproduzione
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              child: Icon(
-                _isPlaying ? Icons.equalizer : Icons.audiotrack,
-                size: 80,
-                color: _isPlaying ? Colors.deepPurple : Colors.grey.shade400,
-              ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.audiotrack, size: 64, color: Colors.deepPurple.shade300),
+          const SizedBox(height: 16),
+          Text(widget.document.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('File audio: ${_formatFileSize(widget.document.fileSize ?? 0)}', style: TextStyle(color: Colors.grey.shade600)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _playAudio,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Ascolta'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
             ),
-            const SizedBox(height: 16),
-            Text(
-              widget.document.fileName,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _isLoading ? 'Caricamento...' : 'Audio file (MP3)',
-              style: TextStyle(
-                color: _isLoading ? Colors.deepPurple : Colors.grey.shade600,
-              ),
-            ),
-            const SizedBox(height: 24),
-
-            // Progress bar della riproduzione
-            if (_duration.inSeconds > 0) ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                    iconSize: 48,
-                    onPressed: _isLoading ? null : _togglePlayback,
-                    color: Colors.deepPurple,
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      children: [
-                        Slider(
-                          value: _position.inSeconds.toDouble(),
-                          max: _duration.inSeconds.toDouble(),
-                          onChanged: (value) {
-                            _audioPlayer.seek(Duration(seconds: value.toInt()));
-                          },
-                          activeColor: Colors.deepPurple,
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              _formatDuration(_position),
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            Text(
-                              _formatDuration(_duration),
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ] else ...[
-              // Mostra pulsante play anche se la durata non è ancora caricata
-              IconButton(
-                icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                iconSize: 64,
-                onPressed: _isLoading ? null : _togglePlayback,
-                color: Colors.deepPurple,
-              ),
-              if (_isLoading)
-                const Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: CircularProgressIndicator(),
-                ),
-            ],
-
-            const SizedBox(height: 16),
-
-            // Pulsanti aggiuntivi
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () => _downloadDocument(),
-                  icon: const Icon(Icons.download),
-                  label: const Text('Scarica Audio'),
-                ),
-                const SizedBox(width: 16),
-                OutlinedButton.icon(
-                  onPressed: () => _openWithDefaultApp(),
-                  icon: const Icon(Icons.open_in_browser),
-                  label: const Text('Apri con...'),
-                ),
-              ],
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  // ============================================
-  // METODO PER RIPRODURRE L'AUDIO - USANDO AUDIOPLAYERS
-  // ============================================
-
-  Future<void> _playAudio() async {
+  // 🎵 IMPLEMENTAZIONE AUDIO REALE
+  void _playAudio() async {
     try {
-      setState(() {
-        _isLoading = true;
-        _audioError = null;
-      });
-
-      final filePath = widget.document.filePath;
-
-      // Verifica che il file esista
-      final file = File(filePath);
-      if (!await file.exists()) {
-        setState(() {
-          _audioError = 'File non trovato: $filePath';
-          _isLoading = false;
-        });
-        return;
-      }
-
-      // Costruisci l'URL per il player (diverso per Windows)
-      String audioUrl;
-      if (Platform.isWindows) {
-        // Per Windows: file:///C:/percorso/file.mp3
-        String path = filePath.replaceAll('\\', '/');
-        audioUrl = 'file:///$path';
-      } else {
-        audioUrl = 'file://$filePath';
-      }
-
-      print('🎵 Riproduzione audio da: $audioUrl');
-
-      // Sospendi qualsiasi riproduzione in corso
       await _audioPlayer.stop();
-
-      // Riproduci il file
-      await _audioPlayer.play(UrlSource(audioUrl));
-
-      print('🎵 Riproduzione avviata');
-
-      if (mounted) {
-        setState(() {
-          _isPlaying = true;
-          _isLoading = false;
-        });
-      }
-
+      await _audioPlayer.play(DeviceFileSource(_filePath!));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('🎵 Riproduzione in corso...'), backgroundColor: Colors.green),
+      );
     } catch (e) {
-      print('❌ Errore riproduzione audio: $e');
-      if (mounted) {
-        setState(() {
-          _audioError = 'Errore: ${e.toString()}';
-          _isPlaying = false;
-          _isLoading = false;
-        });
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Errore audio: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _togglePlayback() async {
-    if (_isPlaying) {
-      await _audioPlayer.pause();
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-        });
-      }
-    } else {
-      await _playAudio();
-    }
-  }
-
-  // ============================================
-  // VISUALIZZATORE PDF
-  // ============================================
-
-  Widget _buildPdfViewer() {
-    final filePath = widget.document.filePath;
-    final exists = File(filePath).existsSync();
-
-    if (!exists) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            const Text(
-              'File PDF non trovato',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Percorso: $filePath',
-              style: TextStyle(color: Colors.grey.shade600),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => _openWithDefaultApp(),
-              icon: const Icon(Icons.open_in_browser),
-              label: const Text('Apri con app predefinita'),
-            ),
-          ],
-        ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('❌ Errore riproduzione: $e'), backgroundColor: Colors.red),
       );
     }
+  }
 
+  // 📄 VISUALIZZATORE PDF
+  Widget _buildPdfViewer() {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.picture_as_pdf,
-            size: 80,
-            color: Colors.red.shade700,
-          ),
+          Icon(Icons.picture_as_pdf, size: 64, color: Colors.red.shade400),
           const SizedBox(height: 16),
-          Text(
-            '📄 ${widget.document.fileName}',
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          Text(widget.document.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          Text(
-            'PDF Document',
-            style: TextStyle(color: Colors.grey.shade600),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Dimensione: ${_getFileSize()}',
-            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-          ),
+          Text('PDF: ${_formatFileSize(widget.document.fileSize ?? 0)}', style: TextStyle(color: Colors.grey.shade600)),
           const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                onPressed: () => _openWithDefaultApp(),
-                icon: const Icon(Icons.open_in_browser),
-                label: const Text('📂 Apri PDF'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.deepPurple,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                ),
-              ),
-              const SizedBox(width: 16),
-              OutlinedButton.icon(
-                onPressed: () => _downloadDocument(),
-                icon: const Icon(Icons.download),
-                label: const Text('💾 Scarica'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            '💡 Suggerimento: il PDF verrà aperto con il visualizzatore predefinito del sistema',
-            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-            textAlign: TextAlign.center,
+          ElevatedButton.icon(
+            onPressed: _openWithDefaultApp,
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Apri con app predefinita'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
           ),
         ],
       ),
     );
   }
 
-  String _getFileSize() {
-    try {
-      final file = File(widget.document.filePath);
-      if (file.existsSync()) {
-        final size = file.lengthSync();
-        if (size > 1024 * 1024) {
-          return '${(size / (1024 * 1024)).toStringAsFixed(2)} MB';
-        } else if (size > 1024) {
-          return '${(size / 1024).toStringAsFixed(1)} KB';
-        } else {
-          return '$size bytes';
-        }
-      }
-    } catch (e) {
-      return 'N/A';
-    }
-    return 'N/A';
+  // 🎼 VISUALIZZATORE MIDI / KAR
+  Widget _buildMidiViewer() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.music_note, size: 64, color: Colors.deepPurple.shade300),
+          const SizedBox(height: 16),
+          Text(widget.document.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('File MIDI/KAR: ${_formatFileSize(widget.document.fileSize ?? 0)}', style: TextStyle(color: Colors.grey.shade600)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _openWithDefaultApp,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Riproduci con app predefinita'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
+          ),
+        ],
+      ),
+    );
   }
 
-  // ============================================
-  // VISUALIZZATORE IMMAGINI
-  // ============================================
+  // 🎼 VISUALIZZATORE STRUTTURATO (MXL / ABC)
+  Widget _buildStructuredViewer() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.description, size: 64, color: Colors.green.shade600),
+          const SizedBox(height: 16),
+          Text(widget.document.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('File strutturato (MXL/ABC)', style: TextStyle(color: Colors.grey.shade600)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _openInternalMxlViewer, // Questa apre la pagina HTML interna
+            icon: const Icon(Icons.web),
+            label: const Text('Visualizza online'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: _openWithDefaultApp,
+            child: const Text('Apri con app esterna (es. Finale)'),
+          ),
+        ],
+      ),
+    );
+  }
 
+  // 🖼️ VISUALIZZATORE IMMAGINE
   Widget _buildImageViewer() {
-    final filePath = widget.document.filePath;
-    final exists = File(filePath).existsSync();
-
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: exists
-                    ? Image.file(
-                  File(filePath),
-                  fit: BoxFit.contain,
-                  errorBuilder: (context, error, stackTrace) {
-                    return _buildImagePlaceholder();
-                  },
-                )
-                    : _buildImagePlaceholder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () => _downloadDocument(),
-                  icon: const Icon(Icons.download),
-                  label: const Text('Scarica Immagine'),
-                ),
-                const SizedBox(width: 16),
-                OutlinedButton.icon(
-                  onPressed: () => _openWithDefaultApp(),
-                  icon: const Icon(Icons.open_in_browser),
-                  label: const Text('Apri'),
-                ),
-              ],
-            ),
-          ],
-        ),
+      child: InteractiveViewer(
+        minScale: 0.5,
+        maxScale: 4.0,
+        child: Image.file(File(_filePath!), fit: BoxFit.contain),
       ),
     );
   }
 
-  Widget _buildImagePlaceholder() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.image, size: 64, color: Colors.grey),
-          const SizedBox(height: 16),
-          Text(
-            '🖼️ ${widget.document.fileName}',
-            style: const TextStyle(color: Colors.grey),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Immagine non disponibile',
-            style: TextStyle(color: Colors.grey.shade500),
-          ),
-        ],
-      ),
+  // 📝 VISUALIZZATORE TESTO
+  Widget _buildTextViewer() {
+    return FutureBuilder<String>(
+      future: _readTextFile(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+        if (snapshot.hasError) return Center(child: Text('Errore: ${snapshot.error}', style: const TextStyle(color: Colors.red)));
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(child: Text(snapshot.data ?? 'Nessun contenuto', style: const TextStyle(fontFamily: 'monospace', fontSize: 14))),
+        );
+      },
     );
   }
 
-  // ============================================
-  // VISUALIZZATORE DEFAULT
-  // ============================================
-
-  Widget _buildDefaultViewer() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.insert_drive_file, size: 80, color: Colors.grey),
-          const SizedBox(height: 16),
-          Text(
-            '📄 ${widget.document.fileName}',
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Tipo: ${widget.document.docType}',
-            style: TextStyle(color: Colors.grey.shade600),
-          ),
-          const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                onPressed: () => _downloadDocument(),
-                icon: const Icon(Icons.download),
-                label: const Text('Download'),
-              ),
-              const SizedBox(width: 16),
-              OutlinedButton.icon(
-                onPressed: () => _openWithDefaultApp(),
-                icon: const Icon(Icons.open_in_browser),
-                label: const Text('Apri'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ============================================
-  // METODI UTILITY
-  // ============================================
-
-  Future<void> _downloadDocument() async {
+  Future<String> _readTextFile() async {
     try {
-      final file = File(widget.document.filePath);
-      if (await file.exists()) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('⬇️ Download: ${widget.document.fileName}'),
-            backgroundColor: Colors.green,
+      final file = File(_filePath!);
+      return await file.exists() ? await file.readAsString() : 'File non trovato';
+    } catch (e) {
+      return 'Errore nella lettura del file: $e';
+    }
+  }
+
+  // 📂 GENERICO
+  Widget _buildGenericViewer() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.insert_drive_file, size: 64, color: Colors.grey.shade400),
+          const SizedBox(height: 16),
+          Text(widget.document.fileName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('Tipo: ${widget.document.docType}', style: TextStyle(color: Colors.grey.shade600)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _openWithDefaultApp,
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Apri con app predefinita'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🖥️ APRI PAGINA INTERNA PER MXL/ABC (invece di Finale)
+  void _openInternalMxlViewer() async {
+    try {
+      // 🔥 GESTIONE ABC: Passa filePath e fileName alla schermata ABC
+      if (widget.document.docType.toLowerCase() == 'abc') {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => AbcViewerScreen(
+              filePath: _filePath!, // Passa il percorso risolto
+              fileName: widget.document.fileName,
+            ),
           ),
         );
-      } else {
-        throw Exception('File non trovato');
+      }
+      // 🔥 GESTIONE MXL: Passa l'oggetto Document completo
+      else if (widget.document.docType.toLowerCase() == 'mxl') {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => MxlViewerScreen(
+              document: widget.document,
+            ),
+          ),
+        );
+      }
+      // Fallback: apri con app esterna
+      else {
+        await _openWithDefaultApp();
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('❌ Errore: $e'),
+          content: Text('❌ Errore: Visualizzatore non trovato. $e'),
           backgroundColor: Colors.red,
         ),
       );
     }
   }
 
-  Future<void> _shareDocument() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('🔗 Condivisione documento'),
-        backgroundColor: Colors.blue,
-      ),
-    );
-  }
-
+  // 📂 APRI CON APP ESTERNA
   Future<void> _openWithDefaultApp() async {
     try {
-      final filePath = widget.document.filePath;
-      final result = await OpenFile.open(filePath);
+      final file = File(_filePath!);
+      if (await file.exists()) {
+        // Usa open_filex per aprire con il programma predefinito (es. Finale, Windows Media Player)
+        final result = await OpenFilex.open(_filePath!);
 
-      if (result.type == ResultType.done) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ Aperto: ${widget.document.fileName}'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        if (result.type != ResultType.done) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ Errore apertura: ${result.message}'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
       } else {
-        throw Exception('Impossibile aprire il file: ${result.message}');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('File non trovato'), backgroundColor: Colors.red),
+        );
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('❌ Errore: $e'),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Errore: $e'), backgroundColor: Colors.red),
       );
     }
   }
 
-  Future<void> _copyToClipboard(String text) async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('📋 Copiato negli appunti!'),
-        backgroundColor: Colors.green,
+  // INFO
+  void _showDocumentInfo() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('📄 Informazioni documento'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildInfoRow('Nome', widget.document.fileName),
+            _buildInfoRow('Tipo', widget.document.docType),
+            _buildInfoRow('Dimensione', _formatFileSize(widget.document.fileSize ?? 0)),
+            if (widget.document.description.isNotEmpty) _buildInfoRow('Descrizione', widget.document.description),
+            _buildInfoRow('Storage', widget.document.storageMode),
+            _buildInfoRow('Caricato da', widget.document.uploadedBy),
+            _buildInfoRow('Data', widget.document.createdAt.substring(0, 10)),
+            _buildInfoRow('Pubblico', widget.document.isPublic ? 'Sì' : 'No'),
+          ],
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Chiudi'))],
       ),
     );
   }
 
-  String _formatDuration(Duration duration) {
-    final minutes = duration.inMinutes.toString().padLeft(2, '0');
-    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
-    return '$minutes:$seconds';
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 80, child: Text('$label:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700, fontSize: 12))),
+          Expanded(child: Text(value, style: const TextStyle(fontSize: 12))),
+        ],
+      ),
+    );
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }

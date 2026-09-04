@@ -94,4 +94,59 @@ class DatabaseMigration {
     
     print('✅ Migrati $migratedCount documenti su ${eventSongs.length} relazioni');
   }
+
+  /// Aggiunge le colonne storage_mode/content/mime_type a `documents` (se mancanti)
+  /// e imposta storage_mode/mime_type per le righe esistenti, in base al doc_type.
+  /// Il campo `content` resta NULL: va popolato con lo script
+  /// lib/scripts/populate_blob_content.dart, eseguito una volta sulla macchina
+  /// dove risiedono ancora i file originali.
+  static Future<void> runBlobStorageMigration(Database db) async {
+    print('🔄 Migrazione storage blob per documents...');
+
+    final columns = await db.rawQuery('PRAGMA table_info(documents)');
+    final existingColumns = columns.map((c) => c['name'] as String).toSet();
+
+    if (!existingColumns.contains('storage_mode')) {
+      await db.execute(
+        "ALTER TABLE documents ADD COLUMN storage_mode TEXT NOT NULL DEFAULT 'filesystem'",
+      );
+    }
+    if (!existingColumns.contains('content')) {
+      await db.execute('ALTER TABLE documents ADD COLUMN content BLOB');
+    }
+    if (!existingColumns.contains('mime_type')) {
+      await db.execute('ALTER TABLE documents ADD COLUMN mime_type TEXT');
+    }
+
+    const blobTypes = ['mxl', 'abc', 'mid', 'kar'];
+    const mimeByType = {
+      'mxl': 'application/vnd.recordare.musicxml+xml',
+      'abc': 'text/vnd.abc',
+      'mid': 'audio/midi',
+      'kar': 'audio/midi',
+      'pdf': 'application/pdf',
+      'audio_mp3': 'audio/mpeg',
+      'audio_wav': 'audio/wav',
+    };
+
+    for (final type in blobTypes) {
+      await db.update(
+        'documents',
+        {'storage_mode': 'blob'},
+        where: 'doc_type = ?',
+        whereArgs: [type],
+      );
+    }
+
+    for (final entry in mimeByType.entries) {
+      await db.update(
+        'documents',
+        {'mime_type': entry.value},
+        where: "doc_type = ? AND (mime_type IS NULL OR mime_type = '')",
+        whereArgs: [entry.key],
+      );
+    }
+
+    print('✅ Migrazione storage blob completata (content da popolare con lo script dedicato)');
+  }
 }

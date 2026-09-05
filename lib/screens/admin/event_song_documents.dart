@@ -181,48 +181,53 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
     PerformanceLogger.start('_createNewDocument');
 
     try {
+      // 🔥 USA FileType.any PER SELEZIONARE QUALSIASI FILE (inclusi MID, KAR, MXL, ABC)
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: false,
-        type: FileType.custom,
-        allowedExtensions: ['pdf', 'mxl', 'abc', 'mp3', 'wav', 'mid', 'kar', 'jpg', 'png', 'txt'],
+        withData: true, // 🔥 NECESSARIO PER LEGGERE I BYTE SU ANDROID!
+        type: FileType.any, // 🔥 NON USARE FileType.custom! Permette TUTTO!
       );
 
       if (result == null || result.files.isEmpty) return;
 
       final file = result.files.first;
-      final filePath = file.path;
       final fileName = file.name;
       final fileSize = file.size;
+      final filePath = file.path; // Percorso (per Windows) - potrebbe essere null su Android
 
-      if (filePath == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Errore: percorso file non valido'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        return;
-      }
-
-      final extension = fileName.split('.').last.toLowerCase();
-      String docType = _getTypeFromExtension(extension);
+      // 🔥 DICHIARA LE VARIABILI PRIMA DI USARLE!
+      String docType = _getTypeFromExtension(fileName.split('.').last.toLowerCase());
 
       Uint8List? content;
       String storageMode = 'filesystem';
 
-      if (['mxl', 'abc', 'mid', 'kar'].contains(docType)) {
-        try {
-          final fileObj = File(filePath);
-          if (await fileObj.exists()) {
-            content = await fileObj.readAsBytes();
-            storageMode = 'blob';
-            print('📦 BLOB letto: ${content.length} bytes per $docType - $fileName');
-          }
-        } catch (e) {
-          print('❌ Errore lettura BLOB: $e');
+      // 🔥 SE IL PERCORSO ESISTE (Windows): prova a leggere dal file fisico
+      if (filePath != null && await File(filePath).exists()) {
+        if (['mid', 'kar', 'abc', 'mxl'].contains(docType)) {
+          content = await File(filePath).readAsBytes();
+          storageMode = 'blob';
+          print('📦 BLOB da file fisico: ${content!.length} bytes');
+        }
+      } else {
+        // 🔥 PER ANDROID (Google Drive, ecc.): usa file.bytes!
+        if (file.bytes != null) {
+          content = file.bytes;
+          storageMode = 'blob';
+          print('📦 BLOB da file.bytes: ${content!.length} bytes');
         }
       }
 
+      // 🔥 FALLBACK: se non abbiamo ancora il BLOB, prova a leggere dal percorso
+      if (content == null && filePath != null) {
+        try {
+          content = await File(filePath).readAsBytes();
+          storageMode = 'blob';
+        } catch (e) {
+          print('❌ Errore lettura file: $e');
+        }
+      }
+
+      // 🔥 DICHIARA IL CONTROLLER PER LA DESCRIZIONE
       final descriptionController = TextEditingController();
       final titleController = TextEditingController(text: fileName);
 
@@ -288,24 +293,23 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
 
       if (resultDialog != true) return;
 
+      // 🔥 COSTRUISCI IL DOCUMENTO
       final document = Document(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
         docType: docType,
         fileName: titleController.text.trim(),
-        filePath: filePath,
+        filePath: filePath, // Può essere null su Android
         fileSize: fileSize,
         description: descriptionController.text.trim(),
         isPublic: true,
         uploadedBy: 'admin',
         createdAt: DateTime.now().toIso8601String(),
-        content: content,
+        content: content, // 🔥 BLOB per Android!
         storageMode: storageMode,
         songId: widget.songId,
       );
 
       await _db.insertDocument(document);
-      // await _db.addDocumentToSong(document.id, widget.songId);
-      // await _loadData();
       await _db.addDocumentToEventSong(
         widget.eventSongId,
         document.id,

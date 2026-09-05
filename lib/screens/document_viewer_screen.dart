@@ -5,15 +5,17 @@ import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart'; // Per MP3
 import 'package:open_filex/open_filex.dart'; // Per aprire file con app predefinita
 import 'package:path_provider/path_provider.dart'; // Per BLOB
+import 'package:flutter_inappwebview/flutter_inappwebview.dart'; // 🔥 PER WEBVIEW SU ANDROID
+import 'package:flutter/services.dart' show rootBundle; // 🔥 PER LEGGERE GLI ASSET
 import '../models/document.dart';
 import '../services/database_service.dart';
 import '../services/document_file_resolver.dart';
+import '../services/mxl_service.dart'; // 🔥 PER ESTRARRE XML DA MXL
 import '../utils/performance_logger.dart';
 
 // 🔥 IMPORT DELLE SCHERMATE INTERNE
 import 'abc_viewer_screen.dart'; // Richiede filePath e fileName
 import 'mxl_viewer_screen.dart';
-
 
 class DocumentViewerScreen extends StatefulWidget {
   final Document document;
@@ -37,6 +39,9 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   bool _isText = false;
   bool _isStructured = false;
 
+  // 🔥 VARIABILE PER IL CONTENUTO (ABC o XML)
+  String _content = '';
+
   @override
   void initState() {
     super.initState();
@@ -59,6 +64,12 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     });
 
     try {
+      // 🔥 LEGGI LA RIGA COMPLETA (con il BLOB) DAL DATABASE!
+      final fullDocument = await _db.getDocumentById(widget.document.id);
+
+      // Usa il documento completo (con content) per il resolver
+      Document documentToResolve = fullDocument ?? widget.document;
+
       // Verifica il tipo di documento
       final docType = widget.document.docType.toLowerCase();
       _isMidi = ['mid', 'kar'].contains(docType);
@@ -69,7 +80,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
       _isStructured = ['mxl', 'abc', 'mid', 'kar'].contains(docType);
 
       // ✅ Gestione BLOB e Filesystem tramite resolver
-      final resolvedDocument = await DocumentFileResolver.resolve(widget.document);
+      final resolvedDocument = await DocumentFileResolver.resolve(documentToResolve);
 
       if (resolvedDocument.filePath != null) {
         final path = resolvedDocument.filePath!;
@@ -197,14 +208,35 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   // 🎵 IMPLEMENTAZIONE AUDIO REALE
   void _playAudio() async {
     try {
+      // 🔥 SE È UN FILE MIDI/KAR, APRI CON APP ESTERNA (OpenFilex)
+      if (_isMidi || widget.document.docType == 'kar') {
+        final result = await OpenFilex.open(_filePath!);
+        if (result.type != ResultType.done) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ Errore apertura MIDI/KAR: ${result.message}'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      // 🔥 PER MP3/WAV: USA AUDIOPLAYERS
       await _audioPlayer.stop();
       await _audioPlayer.play(DeviceFileSource(_filePath!));
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('🎵 Riproduzione in corso...'), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text('🎵 Riproduzione in corso...'),
+          backgroundColor: Colors.green,
+        ),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('❌ Errore riproduzione: $e'), backgroundColor: Colors.red),
+        SnackBar(
+          content: Text('❌ Errore riproduzione: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
@@ -341,23 +373,94 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     );
   }
 
-  // 🖥️ APRI PAGINA INTERNA PER MXL/ABC (invece di Finale)
+  // 🖥️ APRI PAGINA INTERNA PER MXL/ABC (SU ANDROID USA WEBVIEW)
   void _openInternalMxlViewer() async {
     try {
-      // 🔥 GESTIONE ABC: Passa filePath e fileName alla schermata ABC
+      // 🔥 SU ANDROID: usa WebView per aprire l'HTML DENTRO l'app
+      if (Platform.isAndroid) {
+        // 1. LEGGI IL CONTENUTO (ABC o XML) dal file o dal BLOB
+        String content = '';
+
+        if (widget.document.docType.toLowerCase() == 'abc') {
+          // Leggi il file ABC dal percorso o dal BLOB
+          if (widget.document.content != null) {
+            content = String.fromCharCodes(widget.document.content!);
+          } else if (_filePath != null) {
+            content = await File(_filePath!).readAsString();
+          }
+        } else if (widget.document.docType.toLowerCase() == 'mxl') {
+          // Estrai il contenuto XML dal file MXL (tramite MxlService)
+          if (widget.document.content != null) {
+            // Se il file è BLOB, crea un file temporaneo e poi estrai l'XML
+            final tempDir = await getTemporaryDirectory();
+            final tempFile = File('${tempDir.path}/${widget.document.fileName}');
+            await tempFile.writeAsBytes(widget.document.content!);
+            content = await MxlService.extractXmlContent(tempFile.path) ?? '';
+          } else if (_filePath != null) {
+            content = await MxlService.extractXmlContent(_filePath!) ?? '';
+          }
+        }
+
+        // 2. LEGGI L'HTML DAGLI ASSET
+        final htmlString = await rootBundle.loadString('assets/html/spartito-viewer.html');
+
+        // 3. INIETTA IL CONTENUTO NELLA TEXTAREA
+        final filledHtml = htmlString.replaceFirst(
+          RegExp(r'(?<=<textarea id="inputText"[^>]*>)(.*?)(?=</textarea>)', dotAll: true),
+          content,
+        );
+
+        // 4. 🔥 AGGIUNGI UN SCRIPT CHE PREME "GENERA SPARTITO" DOPO 1 SECONDO
+        // (Questo è FONDAMENTALE per i file ABC con più brani!)
+        final scriptToAdd = '''
+        <script>
+          setTimeout(function() {
+            var btn = document.getElementById('processBtn');
+            if (btn) {
+              btn.click();
+            }
+          }, 1000);
+        </script>
+        ''';
+
+        final finalHtml = filledHtml.replaceFirst('</body>', scriptToAdd + '</body>');
+
+        // 5. COPIA L'HTML NELLA MEMORIA DEL TELEFONO
+        final appDocDir = await getApplicationDocumentsDirectory();
+        final htmlFile = File('${appDocDir.path}/spartito_viewer.html');
+        await htmlFile.writeAsString(finalHtml);
+
+        // 6. 🔥 APRI CON WEBVIEW
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => Scaffold(
+              appBar: AppBar(
+                title: Text('Visualizza spartito'),
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+              ),
+              body: InAppWebView(
+                initialUrlRequest: URLRequest(url: WebUri(htmlFile.path)),
+              ),
+            ),
+          ),
+        );
+        return;
+      }
+
+      // 🔥 SU DESKTOP/WEB: usa la vecchia logica (naviga alle schermate specifiche)
       if (widget.document.docType.toLowerCase() == 'abc') {
         Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) => AbcViewerScreen(
-              filePath: _filePath!, // Passa il percorso risolto
+              filePath: _filePath!,
               fileName: widget.document.fileName,
             ),
           ),
         );
-      }
-      // 🔥 GESTIONE MXL: Passa l'oggetto Document completo
-      else if (widget.document.docType.toLowerCase() == 'mxl') {
+      } else if (widget.document.docType.toLowerCase() == 'mxl') {
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -366,9 +469,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
             ),
           ),
         );
-      }
-      // Fallback: apri con app esterna
-      else {
+      } else {
         await _openWithDefaultApp();
       }
     } catch (e) {

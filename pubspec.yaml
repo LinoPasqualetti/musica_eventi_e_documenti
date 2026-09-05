@@ -1,4 +1,4 @@
-name: musica_per_tutti_app
+name: musica_eventi_e_documenti
 description: "App per la gestione di eventi musicali live inclusivi - Musica per Tutti"
 publish_to: 'none'
 version: 1.0.0+1
@@ -35,16 +35,17 @@ dependencies:
     flutter_local_notifications: ^18.0.1
     url_launcher: ^6.3.1
     connectivity_plus: ^6.1.3
-    # open_file: ^3.5.10
     open_filex: ^4.3.4
 
     # ============================================
     # AUDIO E SPARTITI
     # ============================================
+
     audioplayers: ^6.4.0
     pdf: ^3.11.3
     printing: ^5.13.4
     qr: ^3.0.2
+    flutter_midi_command: ^0.5.0
 
     # ============================================
     # GESTIONE FILE MXL (MusicXML compresso)

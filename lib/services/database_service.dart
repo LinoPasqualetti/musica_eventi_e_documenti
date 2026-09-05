@@ -1269,7 +1269,10 @@ class DatabaseService {
     PerformanceLogger.start('getAllDocuments');
     try {
       final db = await database;
-      final List<Map<String, dynamic>> maps = await db.query('documents');
+      final List<Map<String, dynamic>> maps = await db.query(
+          'documents',
+          columns: ['id', 'doc_type', 'file_name', 'file_path', 'file_size', 'mime_type', 'description', 'storage_mode', 'is_public', 'uploaded_by', 'created_at', 'updated_at'] // 🔥 NO content!
+      );
       final documents = List.generate(maps.length, (i) {
         return Document.fromMap(maps[i]);
       });
@@ -1444,8 +1447,12 @@ class DatabaseService {
     PerformanceLogger.start('getDocumentsBySong');
     try {
       final db = await database;
+
+      // 🔥 IMPORTANTE: NON leggere il BLOB (content) in questa query!
+      // Su Android, un BLOB grande non entra nella CursorWindow e causa errore.
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
-      SELECT d.* 
+      SELECT d.id, d.doc_type, d.file_name, d.file_path, d.file_size, d.mime_type, 
+             d.description, d.storage_mode, d.is_public, d.uploaded_by, d.created_at, d.updated_at
       FROM documents d
       INNER JOIN song_documents sd ON d.id = sd.document_id
       WHERE sd.song_id = ?

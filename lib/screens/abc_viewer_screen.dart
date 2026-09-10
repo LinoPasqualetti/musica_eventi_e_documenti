@@ -25,7 +25,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
   String _error = '';
 
   // 🔥 PERCORSO DEL FILE HTML ORIGINALE
-  String get _htmlPath => 'C:/musica_eventi_e_documenti/assets/html/spartito-viewer.html';
+ // String get _htmlPath => 'C:/musica_eventi_e_documenti/assets/html/spartito-viewer.html';
 
   @override
   void initState() {
@@ -51,51 +51,42 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     }
   }
 
-  // 🔥 INIETTA L'ABC E PREME AUTOMATICAMENTE "GENERA SPARTITO" (per distinguere i brani)
+    // 🔥 INIETTA L'ABC E PREME AUTOMATICAMENTE "GENERA SPARTITO"
   Future<void> _openInBrowser() async {
     try {
-      // 1. Percorso del tuo HTML originale
-      final htmlFile = File(_htmlPath);
-      if (!await htmlFile.exists()) {
-        throw Exception('File HTML non trovato: $_htmlPath');
-      }
+      // 1. Leggi l'HTML dagli asset
+      final htmlContent = await rootBundle.loadString('assets/html/spartito-viewer.html');
 
-      // 2. Leggi il contenuto del file HTML
-      final htmlContent = await htmlFile.readAsString();
-
-      // 3. Inietta l'ABC nella textarea (id="inputText")
+      // 2. Inietta l'ABC nella textarea
       final filledHtml = htmlContent.replaceFirst(
         RegExp(r'(?<=<textarea id="inputText"[^>]*>)(.*?)(?=</textarea>)', dotAll: true),
         _abcContent,
       );
 
-      // 4. 🔥 AGGIUNGI UNO SCRIPT CHE PREME IL PULSANTE DOPO 1 SECONDO
-      // In questo modo il tuo HTML trova i brani multipli e mostra il menu a tendina
+      // 3. Aggiungi lo script che preme automaticamente "Genera spartito"
       final scriptToAdd = '''
       <script>
         setTimeout(function() {
           var btn = document.getElementById('processBtn');
-          if (btn) {
-            btn.click();
-          }
+          if (btn) { btn.click(); }
         }, 1000);
       </script>
       ''';
 
-      // Inserisci lo script prima della chiusura del body
       final finalHtml = filledHtml.replaceFirst('</body>', scriptToAdd + '</body>');
 
-      // 5. Salva il file HTML aggiornato in una cartella sicura
+      // 4. Salva e apri nel browser
       final appDocDir = await getApplicationDocumentsDirectory();
       final safeDir = Directory('${appDocDir.path}/viewers');
       if (!await safeDir.exists()) {
         await safeDir.create(recursive: true);
       }
 
-      final outputFile = File('${safeDir.path}/abc_viewer_${DateTime.now().millisecondsSinceEpoch}.html');
+      final outputFile = File(
+        '${safeDir.path}/abc_viewer_${DateTime.now().millisecondsSinceEpoch}.html',
+      );
       await outputFile.writeAsString(finalHtml, flush: true);
 
-      // 6. Apri nel browser
       if (await canLaunchUrl(Uri.file(outputFile.path))) {
         await launchUrl(Uri.file(outputFile.path), mode: LaunchMode.externalApplication);
       } else {

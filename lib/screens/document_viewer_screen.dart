@@ -1227,7 +1227,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
           context,
           MaterialPageRoute(
             builder: (context) => MxlViewerScreen(
-              document: widget.document,
+              document: widget.document.copyWith(filePath: _filePath),
             ),
           ),
         );

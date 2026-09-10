@@ -1,5 +1,6 @@
 // lib/screens/mxl_viewer_screen.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -64,19 +65,13 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
   }
 
   // 🔥 INIETTA L'XML E PREME AUTOMATICAMENTE "GENERA SPARTITO" (per estrarre i brani singoli)
+  // 🔥 INIETTA L'XML E PREME AUTOMATICAMENTE "GENERA SPARTITO"
   Future<void> _openInBrowser() async {
     try {
-      // 1. Percorso del tuo HTML originale
-      final htmlPath = 'C:/musica_eventi_e_documenti/assets/html/spartito-viewer.html';
-      final sourceHtmlFile = File(htmlPath);
-      if (!await sourceHtmlFile.exists()) {
-        throw Exception('File HTML non trovato: $htmlPath');
-      }
+      // 1. Leggi l'HTML dagli asset (funziona su qualsiasi PC e su Android)
+      final htmlContent = await rootBundle.loadString('assets/html/spartito-viewer.html');
 
-      // 2. Leggi il contenuto del file HTML
-      final htmlContent = await sourceHtmlFile.readAsString();
-
-      // 3. Escapa l'XML e iniettalo nella textarea
+      // 2. Escapa l'XML e iniettalo nella textarea
       final escapedXml = (_xmlContent ?? '')
           .replaceAll('&', '&amp;')
           .replaceAll('<', '&lt;')
@@ -87,31 +82,31 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
         escapedXml,
       );
 
-      // 4. Aggiungi uno script che preme automaticamente "Genera spartito"
+      // 3. Aggiungi lo script che preme automaticamente "Genera spartito"
       final scriptToAdd = '''
       <script>
         setTimeout(function() {
           var btn = document.getElementById('processBtn');
-          if (btn) {
-            btn.click();
-          }
+          if (btn) { btn.click(); }
         }, 1000);
       </script>
       ''';
 
       final finalHtml = filledHtml.replaceFirst('</body>', scriptToAdd + '</body>');
 
-      // 5. Salva e apri nel browser
+      // 4. Salva e apri nel browser
       final appDocDir = await getApplicationDocumentsDirectory();
       final safeDir = Directory('${appDocDir.path}/viewers');
       if (!await safeDir.exists()) {
         await safeDir.create(recursive: true);
       }
 
-      final outputFile = File('${safeDir.path}/mxl_viewer_${DateTime.now().millisecondsSinceEpoch}.html');
+      final outputFile = File(
+        '${safeDir.path}/mxl_viewer_${DateTime.now().millisecondsSinceEpoch}.html',
+      );
       await outputFile.writeAsString(finalHtml, flush: true);
 
-      // 6. Apri nel browser
+      // 5. Apri nel browser
       if (await canLaunchUrl(Uri.file(outputFile.path))) {
         await launchUrl(Uri.file(outputFile.path), mode: LaunchMode.externalApplication);
       } else {

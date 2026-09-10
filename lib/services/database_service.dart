@@ -979,16 +979,84 @@ class DatabaseService {
     PerformanceLogger.start('updateSong');
     try {
       final db = await database;
+
+      // 🔥 Verifica che il brano esista prima di aggiornarlo
+      final existing = await db.query(
+        'songs',
+        where: 'id = ?',
+        whereArgs: [song.id],
+      );
+
+      if (existing.isEmpty) {
+        print('⚠️ Brano con ID ${song.id} non trovato! Inserisco come nuovo...');
+        await db.insert('songs', song.toMap());
+        print('✅ Brano inserito (era mancante): ${song.title}');
+        PerformanceLogger.stop('updateSong');
+        return;
+      }
+
+      // 🔥 Salva le relazioni esistenti PRIMA dell'aggiornamento
+      final eventRelations = await db.query(
+        'event_songs',
+        where: 'song_id = ?',
+        whereArgs: [song.id],
+      );
+
+      final docRelations = await db.query(
+        'song_documents',
+        where: 'song_id = ?',
+        whereArgs: [song.id],
+      );
+
+      print('📊 Relazioni esistenti - Eventi: ${eventRelations.length}, Documenti: ${docRelations.length}');
+
+      // 🔥 Aggiorna il brano
       await db.update(
         'songs',
         song.toMap(),
         where: 'id = ?',
         whereArgs: [song.id],
       );
-      print('✅ Brano aggiornato: ${song.title}');
+
+      // 🔥 Verifica che le relazioni siano ancora intatte
+      final afterEventRelations = await db.query(
+        'event_songs',
+        where: 'song_id = ?',
+        whereArgs: [song.id],
+      );
+
+      final afterDocRelations = await db.query(
+        'song_documents',
+        where: 'song_id = ?',
+        whereArgs: [song.id],
+      );
+
+      print('📊 Relazioni dopo aggiornamento - Eventi: ${afterEventRelations.length}, Documenti: ${afterDocRelations.length}');
+
+      // 🔥 Se le relazioni sono state perse, ripristinale!
+      if (afterEventRelations.isEmpty && eventRelations.isNotEmpty) {
+        print('⚠️ RELAZIONI EVENTO PERSATE! Ripristino...');
+        for (var rel in eventRelations) {
+          await db.insert('event_songs', rel);
+        }
+        print('✅ Relazioni evento ripristinate: ${eventRelations.length}');
+      }
+
+      if (afterDocRelations.isEmpty && docRelations.isNotEmpty) {
+        print('⚠️ RELAZIONI DOCUMENTI PERSATE! Ripristino...');
+        for (var rel in docRelations) {
+          await db.insert('song_documents', rel);
+        }
+        print('✅ Relazioni documenti ripristinate: ${docRelations.length}');
+      }
+
+      print('✅ Brano aggiornato: ${song.title} (ID: ${song.id})');
+      PerformanceLogger.info('Brano aggiornato', details: '${song.title} - ID: ${song.id}');
       PerformanceLogger.stop('updateSong');
+
     } catch (e) {
       PerformanceLogger.error('updateSong fallito', error: e);
+      print('❌ Errore updateSong: $e');
       rethrow;
     }
   }
@@ -1012,6 +1080,46 @@ class DatabaseService {
     } catch (e) {
       PerformanceLogger.error('deleteSong fallito', error: e);
       rethrow;
+    }
+  }
+
+  // 🔥 NUOVO METODO: Ottiene le relazioni di un brano (eventi e documenti associati)
+  /// Ottiene le relazioni di un brano (eventi e documenti associati)
+  Future<Map<String, dynamic>> getSongRelations(String songId) async {
+    PerformanceLogger.start('getSongRelations');
+    try {
+      final db = await database;
+
+      // Eventi associati
+      final events = await db.rawQuery('''
+        SELECT e.id, e.title, e.date, e.location
+        FROM events e
+        JOIN event_songs es ON e.id = es.event_id
+        WHERE es.song_id = ?
+      ''', [songId]);
+
+      // Documenti associati
+      final documents = await db.rawQuery('''
+        SELECT d.id, d.file_name, d.doc_type
+        FROM documents d
+        JOIN song_documents sd ON d.id = sd.document_id
+        WHERE sd.song_id = ?
+      ''', [songId]);
+
+      final result = {
+        'song_id': songId,
+        'events': events,
+        'documents': documents,
+        'event_count': events.length,
+        'document_count': documents.length,
+      };
+
+      PerformanceLogger.info('Relazioni brano', details: 'Eventi: ${events.length}, Documenti: ${documents.length}');
+      PerformanceLogger.stop('getSongRelations');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getSongRelations fallito', error: e);
+      return {'song_id': songId, 'error': e.toString()};
     }
   }
 

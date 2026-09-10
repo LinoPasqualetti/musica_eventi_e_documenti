@@ -5,7 +5,7 @@ import '../../models/event_model.dart';
 import '../../models/song_model.dart';
 import '../../models/registration_model.dart';
 import 'song_form_screen.dart';
-import 'event_song_documents.dart';  // <-- NUOVO IMPORT
+import 'event_song_documents.dart';
 
 class EventSongsAssignment extends StatefulWidget {
   final Event event;
@@ -23,6 +23,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
   Map<String, List<String>> _instrumentsBySong = {};
   Map<String, int> _documentsCount = {};
   bool _isLoading = true;
+  bool _isReordering = false;
 
   @override
   void initState() {
@@ -47,6 +48,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
         _instrumentsBySong = instrumentsMap;
         _documentsCount = docsCountMap;
         _isLoading = false;
+        _isReordering = false;
       });
     } catch (e) {
       setState(() => _isLoading = false);
@@ -56,6 +58,62 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
           backgroundColor: Colors.red,
         ),
       );
+    }
+  }
+
+  // 🔥 METODO PER RIORDINARE I BRANI
+  Future<void> _reorderSongs(int oldIndex, int newIndex) async {
+    if (_isReordering) return;
+    setState(() => _isReordering = true);
+
+    try {
+      // Corregge l'indice per ListView
+      if (newIndex > oldIndex) {
+        newIndex -= 1;
+      }
+
+      final List<Song> reordered = List.from(_assignedSongs);
+      final Song item = reordered.removeAt(oldIndex);
+      reordered.insert(newIndex, item);
+
+      // Aggiorna l'UI subito
+      setState(() {
+        _assignedSongs = reordered;
+      });
+
+      // Salva il nuovo ordine nel database
+      for (int i = 0; i < reordered.length; i++) {
+        await _db.updateSongOrder(
+          widget.event.id,
+          reordered[i].id,
+          i, // order_index inizia da 0
+        );
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Ordine scaletta aggiornato!'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        // Ricarica i dati per ripristinare l'ordine corretto
+        await _loadData();
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isReordering = false);
+      }
     }
   }
 
@@ -86,6 +144,188 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     }
   }
 
+  // 🔥 METODO PER LA RIMOZIONE CON DIALOG DI CONFERMA
+  Future<void> _confirmRemoveSong(Song song) async {
+    try {
+      // 🔥 Verifica in quanti altri eventi è presente la canzone
+      final events = await _db.getEventsBySong(song.id);
+      final otherEvents = events.where((e) => e.id != widget.event.id).toList();
+      final hasOtherEvents = otherEvents.isNotEmpty;
+
+      // 🔥 Verifica se ci sono iscrizioni per questo brano nell'evento
+      final registrations = await _db.getRegistrationsByEvent(widget.event.id);
+      final hasRegistrations = registrations.any((reg) {
+        if (reg.selectedSongIds != null && reg.selectedSongIds!.isNotEmpty) {
+          final songIds = reg.selectedSongIds!.split(',');
+          return songIds.contains(song.id);
+        }
+        return false;
+      });
+
+      // 🔥 Mostra il dialog di conferma
+      final confirm = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.warning_amber, color: Colors.orange),
+              const SizedBox(width: 8),
+              const Text('Conferma Rimozione'),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Rimuovere "${song.title}" dalla scaletta?',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // 🔥 AVVISO: Canzone presente in altri eventi
+                if (hasOtherEvents)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.shade300),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.info_outline, color: Colors.orange.shade700, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              '⚠️ Canzone presente in altri eventi',
+                              style: TextStyle(
+                                color: Colors.orange.shade800,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Questa canzone è presente anche in ${otherEvents.length} altro${otherEvents.length > 1 ? 'i' : ''} evento${otherEvents.length > 1 ? '' : 'o'}:',
+                          style: TextStyle(
+                            color: Colors.orange.shade700,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        ...otherEvents.map((e) => Padding(
+                          padding: const EdgeInsets.only(left: 8, top: 2),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.event, size: 12, color: Colors.orange),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  '${e.title} (${e.date})',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.orange.shade700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )).toList(),
+                        const SizedBox(height: 8),
+                        Text(
+                          '⚠️ La rimozione da questo evento NON influisce sugli altri eventi.',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.orange.shade600,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // 🔥 AVVISO: Ci sono iscrizioni per questo brano
+                if (hasRegistrations)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    margin: const EdgeInsets.only(top: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.shade300),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_remove, color: Colors.red.shade700, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '⚠️ Ci sono musicisti iscritti che hanno selezionato questo brano. '
+                                'La rimozione potrebbe influire sulle loro iscrizioni.',
+                            style: TextStyle(
+                              color: Colors.red.shade700,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                const SizedBox(height: 12),
+                Text(
+                  'Sei sicuro di voler rimuovere questo brano dalla scaletta?',
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Annulla'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Rimuovi'),
+            ),
+          ],
+        ),
+      );
+
+      // 🔥 Se l'utente ha confermato, procedi con la rimozione
+      if (confirm == true) {
+        await _removeSong(song);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _removeSong(Song song) async {
     try {
       await _db.removeSongFromEvent(widget.event.id, song.id);
@@ -96,6 +336,313 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
           SnackBar(
             content: Text('🗑️ "${song.title}" rimosso dall\'evento'),
             backgroundColor: Colors.orange,
+          ),
+        );
+
+        // 🔥 Torna indietro con risultato true per aggiornare la schermata precedente
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Errore: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // 🔥 NUOVO METODO: Modifica brano
+  Future<void> _editSong(Song song) async {
+    // 1. Verifica se la canzone è associata a più eventi
+    final events = await _db.getEventsBySong(song.id);
+    final isMultiEvent = events.length > 1;
+
+    // 2. Controlla le relazioni esistenti
+    final relations = await _db.getSongRelations(song.id);
+    final eventRelations = relations['events'] as List? ?? [];
+    final docRelations = relations['documents'] as List? ?? [];
+
+    // 3. Mostra il dialog di modifica
+    final titleController = TextEditingController(text: song.title);
+    final composerController = TextEditingController(text: song.composer ?? '');
+    final difficultyController = TextEditingController(text: song.difficulty ?? '');
+    final genreController = TextEditingController(text: song.genre ?? '');
+    final tempoController = TextEditingController(text: song.tempo?.toString() ?? '');
+    final keyController = TextEditingController(text: song.keySignature ?? '');
+    final timeController = TextEditingController(text: song.timeSignature ?? '');
+
+    int? durationSeconds = song.durationSeconds;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateModal) {
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.edit, color: Colors.deepPurple),
+                const SizedBox(width: 8),
+                const Text('Modifica Brano'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 🔥 AVVISO se la canzone è su più eventi
+                  if (isMultiEvent)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.orange.shade300),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber, color: Colors.orange.shade700),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '⚠️ Questa canzone è associata a ${events.length} eventi!\n'
+                                  'Le modifiche influenzeranno TUTTI gli eventi.',
+                              style: TextStyle(
+                                color: Colors.orange.shade800,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  TextField(
+                    controller: titleController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Titolo *',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: composerController,
+                    decoration: const InputDecoration(
+                      labelText: 'Compositore',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: difficultyController,
+                    decoration: const InputDecoration(
+                      labelText: 'Difficoltà',
+                      border: OutlineInputBorder(),
+                      hintText: 'beginner, intermediate, advanced',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: genreController,
+                    decoration: const InputDecoration(
+                      labelText: 'Genere',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: tempoController,
+                          decoration: const InputDecoration(
+                            labelText: 'Tempo (BPM)',
+                            border: OutlineInputBorder(),
+                            hintText: '120',
+                          ),
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: keyController,
+                          decoration: const InputDecoration(
+                            labelText: 'Tonalità',
+                            border: OutlineInputBorder(),
+                            hintText: 'Do, Sol, etc.',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: timeController,
+                          decoration: const InputDecoration(
+                            labelText: 'Tempo in battute',
+                            border: OutlineInputBorder(),
+                            hintText: '4/4, 3/4, etc.',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: TextEditingController(
+                            text: durationSeconds?.toString() ?? '',
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: 'Durata (secondi)',
+                            border: OutlineInputBorder(),
+                            hintText: '180',
+                          ),
+                          keyboardType: TextInputType.number,
+                          onChanged: (value) {
+                            durationSeconds = int.tryParse(value);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '📊 Relazioni esistenti',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.grey.shade700,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Eventi: ${eventRelations.length}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        Text(
+                          'Documenti: ${docRelations.length}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Annulla'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  if (titleController.text.trim().isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Il titolo è obbligatorio'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+                  Navigator.pop(context, true);
+                  _saveSongEdit(
+                    song: song,
+                    title: titleController.text.trim(),
+                    composer: composerController.text.trim(),
+                    difficulty: difficultyController.text.trim(),
+                    genre: genreController.text.trim(),
+                    tempo: int.tryParse(tempoController.text.trim()),
+                    keySignature: keyController.text.trim(),
+                    timeSignature: timeController.text.trim(),
+                    durationSeconds: durationSeconds,
+                    isMultiEvent: isMultiEvent,
+                    events: events,
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Salva Modifiche'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // 🔥 NUOVO METODO: Salva modifiche brano
+  Future<void> _saveSongEdit({
+    required Song song,
+    required String title,
+    required String composer,
+    required String difficulty,
+    required String genre,
+    required int? tempo,
+    required String? keySignature,
+    required String? timeSignature,
+    required int? durationSeconds,
+    required bool isMultiEvent,
+    required List<Event> events,
+  }) async {
+    try {
+      final updatedSong = Song(
+        id: song.id,
+        title: title,
+        composer: composer.isNotEmpty ? composer : null,
+        difficulty: difficulty.isNotEmpty ? difficulty : null,
+        genre: genre.isNotEmpty ? genre : null,
+        durationSeconds: durationSeconds,
+        tempo: tempo,
+        keySignature: keySignature?.isNotEmpty == true ? keySignature : null,
+        timeSignature: timeSignature?.isNotEmpty == true ? timeSignature : null,
+        createdBy: song.createdBy,
+        createdAt: song.createdAt,
+        updatedAt: DateTime.now().toIso8601String(),
+      );
+
+      await _db.updateSong(updatedSong);
+      await _loadData();
+
+      if (mounted) {
+        final message = isMultiEvent
+            ? '✅ Brano aggiornato su TUTTI gli eventi (${events.length})'
+            : '✅ Brano aggiornato con successo!';
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(
+                  isMultiEvent ? Icons.warning : Icons.check_circle,
+                  color: isMultiEvent ? Colors.orange : Colors.white,
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(message)),
+              ],
+            ),
+            backgroundColor: isMultiEvent ? Colors.orange : Colors.green,
+            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -207,15 +754,13 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
   // INDICATORI
   // ============================================
 
-  // NUOVO: Icona documenti CLICCABILE
   Widget _buildDocumentIndicator(int count, Song song) {
     return GestureDetector(
       onTap: () async {
-        // Ottieni l'event_song_id per questo evento e brano
         final eventSongId = await _db.getEventSongId(widget.event.id, song.id);
         if (eventSongId != null) {
           if (!mounted) return;
-          Navigator.push(
+          final result = await Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => EventSongDocumentsScreen(
@@ -226,6 +771,9 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
               ),
             ),
           );
+          if (result == true && mounted) {
+            await _loadData();
+          }
         } else {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -289,17 +837,18 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     );
   }
 
-  // Dialog per aggiungere un brano esistente
+  // ============================================
+  // DIALOG PER AGGIUNGARE BRANO
+  // ============================================
+
   Future<void> _showAddSongDialog() async {
     final TextEditingController _searchController = TextEditingController();
     String searchQuery = '';
 
-    // Filtra i brani disponibili (non ancora assegnati)
     final availableSongs = _allSongs
         .where((song) => !_assignedSongs.any((s) => s.id == song.id))
         .toList();
 
-    // Se non ci sono brani disponibili, suggerisci di crearne uno
     if (availableSongs.isEmpty) {
       final createNew = await showDialog<bool>(
         context: context,
@@ -333,7 +882,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
       return;
     }
 
-    // Mostra il dialog con la lista filtrata
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -355,7 +903,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Header
                   Row(
                     children: [
                       const Text(
@@ -373,7 +920,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  // Barra di ricerca
                   TextField(
                     controller: _searchController,
                     decoration: InputDecoration(
@@ -409,7 +955,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                     },
                   ),
                   const SizedBox(height: 8),
-                  // Pulsante "Crea Nuovo Brano"
                   Row(
                     children: [
                       const Icon(Icons.add_circle, color: Colors.green, size: 18),
@@ -432,7 +977,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                     ],
                   ),
                   const Divider(),
-                  // Lista brani
                   Expanded(
                     child: filteredSongs.isEmpty
                         ? Center(
@@ -490,7 +1034,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                 Expanded(
                                   child: Text(song.title),
                                 ),
-                                // Icona documenti (non cliccabile qui, solo informativa)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 6,
@@ -550,7 +1093,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     );
   }
 
-  // Dialog per creare un nuovo brano
   Future<void> _showCreateNewSongDialog(String title) async {
     if (title.isEmpty) {
       final titleController = TextEditingController();
@@ -622,7 +1164,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Intestazione
             Row(
               children: [
                 const Text(
@@ -637,11 +1178,27 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                   '${_assignedSongs.length} brani',
                   style: const TextStyle(color: Colors.grey),
                 ),
+                if (_assignedSongs.length > 1) ...[
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: Colors.grey.shade400,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'trascina per riordinare',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.grey.shade500,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 8),
 
-            // Lista brani assegnati
             if (_assignedSongs.isEmpty)
               Container(
                 padding: const EdgeInsets.all(32),
@@ -680,10 +1237,13 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
               )
             else
               Expanded(
-                child: ListView.builder(
-                  itemCount: _assignedSongs.length,
-                  itemBuilder: (context, index) {
-                    final song = _assignedSongs[index];
+                child: ReorderableListView(
+                  onReorder: _reorderSongs,
+                  padding: const EdgeInsets.only(bottom: 16),
+                  physics: const BouncingScrollPhysics(),
+                  children: _assignedSongs.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final song = entry.value;
                     final count = _registrationsCount[song.id] ?? 0;
                     final instruments = _instrumentsBySong[song.id] ?? [];
                     final docsCount = _documentsCount[song.id] ?? 0;
@@ -712,18 +1272,28 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                 ),
                               ),
                             ),
-                            // Icona documenti CLICCABILE
+                            // 🔥 PULSANTE MODIFICA
+                            IconButton(
+                              icon: const Icon(
+                                Icons.edit,
+                                color: Colors.deepPurple,
+                              ),
+                              onPressed: () => _editSong(song),
+                              tooltip: 'Modifica brano',
+                              iconSize: 20,
+                            ),
                             _buildDocumentIndicator(docsCount, song),
                             const SizedBox(width: 8),
                             _buildRegistrationIndicator(count),
                             const SizedBox(width: 8),
+                            // 🔥 PULSANTE RIMUOVI CON CONFERMA
                             IconButton(
                               icon: const Icon(
                                 Icons.remove_circle,
                                 color: Colors.red,
                               ),
-                              onPressed: () => _removeSong(song),
-                              tooltip: 'Rimuovi',
+                              onPressed: () => _confirmRemoveSong(song),
+                              tooltip: 'Rimuovi dalla scaletta',
                               iconSize: 20,
                             ),
                           ],
@@ -758,11 +1328,39 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                   color: Colors.grey,
                                 ),
                               ),
+                            // 🔥 Mostra se la canzone è su più eventi
+                            FutureBuilder<List<Event>>(
+                              future: _db.getEventsBySong(song.id),
+                              builder: (context, snapshot) {
+                                if (snapshot.hasData && snapshot.data!.length > 1) {
+                                  final otherEvents = snapshot.data!
+                                      .where((e) => e.id != widget.event.id)
+                                      .length;
+                                  return Container(
+                                    margin: const EdgeInsets.only(top: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.orange.shade50,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      '📌 Presente in ${snapshot.data!.length} eventi (${otherEvents} altro${otherEvents > 1 ? 'i' : ''})',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.orange.shade700,
+                                      ),
+                                    ),
+                                  );
+                                }
+                                return const SizedBox.shrink();
+                              },
+                            ),
                           ],
                         ),
                       ),
                     );
-                  },
+                  }).toList(),
                 ),
               ),
           ],

@@ -307,8 +307,9 @@
     const doc = new DOMParser().parseFromString(xmlText, "application/xml");
     if (doc.querySelector("parsererror")) throw new Error("XML non valido o non leggibile.");
 
-    const part = doc.querySelector("part");
-    if(!part) throw new Error("Nessun elemento <part> trovato nel MusicXML.");
+    // 🔥 LEGGI TUTTE LE PARTI (non solo la prima!)
+    const partList = Array.from(doc.querySelectorAll("part"));
+    if (partList.length === 0) throw new Error("Nessuna parte trovata.");
 
     const title = doc.querySelector("work work-title")?.textContent
                || doc.querySelector("movement-title")?.textContent
@@ -320,157 +321,129 @@
     let beats = 4, beatType = 4;
     let headerCaptured = false;
 
-    const measures = Array.from(part.querySelectorAll("measure"));
-    let bodyLines = [];
-    let currentLine = "";
-    let measureCount = 0;
-    let lyricWords = [];
-    let hasLyrics = false;
+    // Array per le voci multiple
+    let allPartsAbc = [];
+    let voicesMeta = [];
 
-    // 🔥 Raccogli tutte le voci (tracce) dal MusicXML
-    const voices = new Map();
-    let voiceCounter = 0;
+    partList.forEach((part, partIndex) => {
+      const partName = part.querySelector("part-name")?.textContent || ("Voce " + (partIndex + 1));
+      const measures = Array.from(part.querySelectorAll("measure"));
+      let bodyLines = [];
+      let currentLine = "";
+      let measureCount = 0;
 
-    measures.forEach(measure => {
-      const attrs = measure.querySelector("attributes");
-      if(attrs){
-        const div = attrs.querySelector("divisions");
-        if(div) divisions = parseFloat(div.textContent);
-        const fifthsEl = attrs.querySelector("key fifths");
-        if(fifthsEl && !headerCaptured) fifths = parseInt(fifthsEl.textContent, 10);
-        const modeEl = attrs.querySelector("key mode");
-        if(modeEl && !headerCaptured) mode = modeEl.textContent;
-        const beatsEl = attrs.querySelector("time beats");
-        const beatTypeEl = attrs.querySelector("time beat-type");
-        if(beatsEl && beatTypeEl && !headerCaptured){
-          beats = parseInt(beatsEl.textContent, 10);
-          beatType = parseInt(beatTypeEl.textContent, 10);
+      measures.forEach(measure => {
+        const attrs = measure.querySelector("attributes");
+        if(attrs){
+          const div = attrs.querySelector("divisions");
+          if(div) divisions = parseFloat(div.textContent);
+          const fifthsEl = attrs.querySelector("key fifths");
+          if(fifthsEl && !headerCaptured) fifths = parseInt(fifthsEl.textContent, 10);
+          const modeEl = attrs.querySelector("key mode");
+          if(modeEl && !headerCaptured) mode = modeEl.textContent;
+          const beatsEl = attrs.querySelector("time beats");
+          const beatTypeEl = attrs.querySelector("time beat-type");
+          if(beatsEl && beatTypeEl && !headerCaptured){
+            beats = parseInt(beatsEl.textContent, 10);
+            beatType = parseInt(beatTypeEl.textContent, 10);
+          }
+          headerCaptured = true;
         }
-        headerCaptured = true;
-      }
 
-      const children = Array.from(measure.children);
-      let beatsInMeasure = [];
+        const children = Array.from(measure.children);
+        let beatsInMeasure = [];
 
-      children.forEach(el => {
-        if(el.tagName === "harmony"){
-          const sym = chordSymbolFromHarmony(el);
-          if(sym) beatsInMeasure.push({type:"chordsym", sym});
-        } else if(el.tagName === "note"){
-          const isChordTone = !!el.querySelector("chord");
-          const isRest = !!el.querySelector("rest");
-          const durationEl = el.querySelector("duration");
-          const duration = durationEl ? parseFloat(durationEl.textContent) : divisions/2;
-          let lengthUnits = Math.max(1, Math.round((duration / (divisions/2))));
-          const lenSuffix = lengthUnits === 1 ? "" : String(lengthUnits);
+        children.forEach(el => {
+          if(el.tagName === "harmony"){
+            const sym = chordSymbolFromHarmony(el);
+            if(sym) beatsInMeasure.push({type:"chordsym", sym});
+          } else if(el.tagName === "note"){
+            const isChordTone = !!el.querySelector("chord");
+            const isRest = !!el.querySelector("rest");
+            const durationEl = el.querySelector("duration");
+            const duration = durationEl ? parseFloat(durationEl.textContent) : divisions/2;
+            let lengthUnits = Math.max(1, Math.round((duration / (divisions/2))));
+            const lenSuffix = lengthUnits === 1 ? "" : String(lengthUnits);
 
-          // 🔥 Estrai la voce (voice) se presente
-          const voiceEl = el.querySelector("voice");
-          let voiceId = voiceEl ? voiceEl.textContent : "1";
-          if (!voices.has(voiceId)) {
-            voiceCounter++;
-            voices.set(voiceId, {
-              id: voiceId,
-              index: voiceCounter,
-              label: voiceCounter === 1 ? "Melodia" : voiceCounter === 2 ? "Accordi" : "Controcanto",
-              notes: []
-            });
-          }
-
-          let token;
-          if(isRest){
-            token = "z" + lenSuffix;
-          } else {
-            const pitchEl = el.querySelector("pitch");
-            const step = pitchEl.querySelector("step").textContent;
-            const alter = parseInt(pitchEl.querySelector("alter")?.textContent || "0", 10);
-            const octave = parseInt(pitchEl.querySelector("octave").textContent, 10);
-            token = pitchToAbc(step, alter, octave) + lenSuffix;
-            const tie = el.querySelector("tie[type='start'], notations tied[type='start']");
-            if(tie) token += "-";
-          }
-
-          const lyricEl = el.querySelector("lyric text");
-          if(lyricEl){
-            hasLyrics = true;
-            const syllabic = el.querySelector("lyric syllabic")?.textContent || "single";
-            let syl = lyricEl.textContent;
-            if(syllabic === "begin" || syllabic === "middle") syl += "-";
-            lyricWords.push(syl);
-          } else if(!isChordTone && !isRest){
-            lyricWords.push("*");
-          }
-
-          // Aggiungi la nota alla voce
-          const voiceData = voices.get(voiceId);
-          if (voiceData) {
-            voiceData.notes.push(token);
-          }
-
-          if(isChordTone && beatsInMeasure.length){
-            const last = beatsInMeasure[beatsInMeasure.length-1];
-            if(last.type === "note"){
-              last.pitches.push(token.replace(/[0-9]+$/,""));
+            let token;
+            if(isRest){
+              token = "z" + lenSuffix;
+            } else {
+              const pitchEl = el.querySelector("pitch");
+              const step = pitchEl.querySelector("step").textContent;
+              const alter = parseInt(pitchEl.querySelector("alter")?.textContent || "0", 10);
+              const octave = parseInt(pitchEl.querySelector("octave").textContent, 10);
+              token = pitchToAbc(step, alter, octave) + lenSuffix;
+              const tie = el.querySelector("tie[type='start'], notations tied[type='start']");
+              if(tie) token += "-";
             }
-          } else {
-            beatsInMeasure.push({type:"note", pitches:[token], raw: !isRest});
+
+            // Genera gli accordi se presenti nella prima voce
+            const lyricEl = el.querySelector("lyric text");
+            if(lyricEl) {
+              // (Ignoriamo i testi per ora per semplicità)
+            }
+
+            if(isChordTone && beatsInMeasure.length){
+              const last = beatsInMeasure[beatsInMeasure.length-1];
+              if(last.type === "note"){
+                last.pitches.push(token.replace(/[0-9]+$/,""));
+              }
+            } else {
+              beatsInMeasure.push({type:"note", pitches:[token], raw: !isRest});
+            }
           }
+        });
+
+        beatsInMeasure.forEach(b => {
+          if(b.type === "chordsym"){
+            currentLine += `"${b.sym}"`;
+          } else if(b.pitches.length > 1){
+            currentLine += "[" + b.pitches.join("") + "] ";
+          } else {
+            currentLine += b.pitches[0] + " ";
+          }
+        });
+        currentLine += "| ";
+        measureCount++;
+        if(measureCount % 4 === 0){
+          bodyLines.push(currentLine.trim());
+          currentLine = "";
         }
       });
 
-      beatsInMeasure.forEach(b => {
-        if(b.type === "chordsym"){
-          currentLine += `"${b.sym}"`;
-        } else if(b.pitches.length > 1){
-          currentLine += "[" + b.pitches.join("") + "] ";
-        } else {
-          currentLine += b.pitches[0] + " ";
-        }
+      if(currentLine.trim()) bodyLines.push(currentLine.trim());
+
+      // Crea la voce ABC per questa parte
+      let partAbc = "V:" + (partIndex + 1) + " " + (partIndex === 0 ? "clef=treble" : "clef=treble") + " name=\"" + partName + "\"\n";
+      partAbc += bodyLines.join("\n");
+
+      allPartsAbc.push(partAbc);
+      voicesMeta.push({
+        id: partIndex + 1,
+        label: partName,
+        index: partIndex + 1,
+        color: TRACK_COLORS[partIndex % TRACK_COLORS.length]
       });
-      currentLine += "| ";
-      measureCount++;
-      if(measureCount % 4 === 0){
-        bodyLines.push(currentLine.trim());
-        currentLine = "";
-      }
     });
-    if(currentLine.trim()) bodyLines.push(currentLine.trim());
-    if(bodyLines.length) bodyLines[bodyLines.length-1] += "]";
 
     const fifthsIdx = Math.max(0, Math.min(14, fifths + 7));
     const keyLetter = (mode === "minor") ? MINOR_KEYS[fifthsIdx] + "m" : MAJOR_KEYS[fifthsIdx];
 
-    // 🔥 Costruisci l'ABC con le voci multiple
+    // Creazione dell'ABC con tutte le voci
     let abc = `X:1\nT:${title}\n`;
     if(composer) abc += `C:${composer}\n`;
     abc += `M:${beats}/${beatType}\nL:1/8\nK:${keyLetter}\n`;
 
-    // 🔥 Se ci sono più voci, aggiungi le informazioni
-    const voiceList = Array.from(voices.values());
-    if (voiceList.length > 1) {
-      abc += `%%score T1\n`;
-      voiceList.forEach((v, i) => {
-        abc += `V:${v.id} clef=treble name="${v.label}"\n`;
-      });
+    if (allPartsAbc.length > 1) {
+      abc += `%%score ` + allPartsAbc.map((v, i) => (i + 1)).join(" ") + "\n";
+      abc += allPartsAbc.join("\n");
+    } else {
+      abc += allPartsAbc[0];
     }
 
-    bodyLines.forEach((line, i) => {
-      abc += line + "\n";
-      if(hasLyrics){
-        const wordsForLine = lyricWords.splice(0, (line.match(/[A-Ga-gz]/g)||[]).length);
-        if(wordsForLine.some(w => w !== "*")){
-          abc += "w: " + wordsForLine.join(" ") + "\n";
-        }
-      }
-    });
-
-    // 🔥 Salva le informazioni delle tracce
-    window._trackInfo = voiceList.map(v => ({
-      id: v.id,
-      label: v.label,
-      index: v.index,
-      color: TRACK_COLORS[(v.index - 1) % TRACK_COLORS.length]
-    }));
+    // Salva le informazioni delle tracce
+    window._trackInfo = voicesMeta;
 
     return abc;
   }
@@ -497,7 +470,7 @@
   let synthControl = null;
   let tuneObject = null;
   let tuneChunks = [];
-  let currentTrackFilter = null; // 🔥 Filtro per traccia selezionata
+  let currentTrackFilter = null;
 
   const INSTRUMENT_PRESETS = [
     { label: "Concerto (Do) — nessuna trasposizione", semis: 0 },
@@ -550,7 +523,6 @@
     let currentVoice = null;
 
     for (let line of lines) {
-      // Cerca le dichiarazioni di voce
       const voiceMatch = line.match(/^V:(\S+)/);
       if (voiceMatch) {
         currentVoice = voiceMatch[1];
@@ -561,9 +533,7 @@
         continue;
       }
 
-      // Se siamo in una voce attiva, mantieni la riga
       if (inVoice) {
-        // Se la riga è una dichiarazione di fine voce, esci
         if (line.trim() === '' || line.match(/^%%/)) {
           filtered.push(line);
           inVoice = false;
@@ -572,7 +542,6 @@
           filtered.push(line);
         }
       } else {
-        // Mantieni le righe di intestazione e le direttive globali
         if (line.match(/^X:|^T:|^C:|^M:|^L:|^K:|^%%/)) {
           filtered.push(line);
         }
@@ -603,7 +572,6 @@
         this.dataset.active = isActive ? 'false' : 'true';
         this.classList.toggle('active');
 
-        // Raccogli le tracce attive
         const activeTracks = [];
         document.querySelectorAll('.track-chip').forEach(ch => {
           if (ch.dataset.active === 'true') {
@@ -611,7 +579,6 @@
           }
         });
 
-        // 🔥 Ricarica lo spartito con le tracce selezionate
         if (activeTracks.length > 0) {
           const filteredAbc = filterTracks(currentAbc, activeTracks);
           renderAndPlay(filteredAbc, parseInt(document.getElementById('transposeSel').value));
@@ -629,10 +596,13 @@
     document.getElementById("abc-output").value = abc;
     document.getElementById("output-panel").style.display = "block";
 
+    // 🔥 Visualizza TUTTE le voci!
     const visualObjs = ABCJS.renderAbc("sheet-music", abc, {
       responsive: "resize",
       add_classes: true,
-      visualTranspose: transposeSemitones || 0
+      visualTranspose: transposeSemitones || 0,
+      staffwidth: 700,
+      generateParts: true
     });
     tuneObject = visualObjs[0];
 
@@ -789,7 +759,6 @@
       const tuneSelWrap = document.getElementById("tuneSelWrap");
       const tuneCount = (abc.match(/^X:\s*\d+/gm) || []).length;
 
-      // 🔥 Mostra il selettore tracce se disponibile
       if (window._trackInfo && window._trackInfo.length > 0) {
         renderTrackSelector(window._trackInfo);
       }

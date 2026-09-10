@@ -3,12 +3,23 @@
 build/
 .pub-cache/
 .pub/
-*.lock
+# NB: pubspec.lock NON va ignorato
 
 # Windows
-windows/
+windows/flutter/ephemeral/
 *.exe
 *.dll
+*.pdb
+*.lib
+*.exp
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/upload-keystore.jks
+android/app/*.jks
+android/app/*.keystore
 
 # IDE
 .idea/
@@ -22,10 +33,18 @@ Thumbs.db
 # Logs
 *.log
 
-# Database (se non vuoi versionare il DB)
+# Database locale (NON versionare)
 *.db
 *.sqlite
 *.sqlite3
+
+# MA il DB degli asset VA versionato
+!assets/db/*.db
+
+# Viewer temporanei
+viewers/
+*_viewer_*.html
+spartito_viewer.html
 
 # Environment
 .env

@@ -1,12 +1,15 @@
+// [MODIFICA] C:\musica_eventi_e_documenti\lib\screens\mxl_viewer_screen.dart
+
 // lib/screens/mxl_viewer_screen.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:open_filex/open_filex.dart';
 import '../models/document.dart';
 import '../services/mxl_service.dart';
+import '../utils/constants.dart';
 
 class MxlViewerScreen extends StatefulWidget {
   final Document document;
@@ -22,6 +25,7 @@ class MxlViewerScreen extends StatefulWidget {
 
 class _MxlViewerScreenState extends State<MxlViewerScreen> {
   bool _isLoading = true;
+  bool _isOpening = false;
   String? _xmlContent;
   String? _error;
   Map<String, String> _metadata = {};
@@ -37,9 +41,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
     try {
       final filePath = widget.document.filePath;
       if (filePath == null) {
-        setState(() {
-          _error = 'Errore: Percorso file mancante';
-        });
+        setState(() => _error = 'Errore: Percorso file mancante');
         setState(() => _isLoading = false);
         return;
       }
@@ -52,65 +54,65 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
           _metadata = MxlService.extractMetadata(xmlContent);
         });
       } else {
-        setState(() {
-          _error = 'Impossibile estrarre il contenuto MXL';
-        });
+        setState(() => _error = 'Impossibile estrarre il contenuto MXL');
       }
     } catch (e) {
-      setState(() {
-        _error = 'Errore: $e';
-      });
+      setState(() => _error = 'Errore: $e');
     }
     setState(() => _isLoading = false);
   }
 
-  // 🔥 INIETTA L'XML E PREME AUTOMATICAMENTE "GENERA SPARTITO" (per estrarre i brani singoli)
-  // 🔥 INIETTA L'XML E PREME AUTOMATICAMENTE "GENERA SPARTITO"
+  /// 🔥 NUOVO FLUSSO: carica il .mxl sul backend e apre /mxl-viewer?id=...
+  /// Il backend serve il binario, il browser lo converte e lo renderizza
+  /// con ScoreViewer.jsx (stessa logica del web).
   Future<void> _openInBrowser() async {
+    setState(() => _isOpening = true);
     try {
-      // 1. Leggi l'HTML dagli asset (funziona su qualsiasi PC e su Android)
-      final htmlContent = await rootBundle.loadString('assets/html/spartito-viewer.html');
+      final filePath = widget.document.filePath;
+      if (filePath == null) throw 'Percorso file mancante';
 
-      // 2. Escapa l'XML e iniettalo nella textarea
-      final escapedXml = (_xmlContent ?? '')
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;');
+      final file = File(filePath);
+      if (!await file.exists()) throw 'File non trovato: $filePath';
 
-      final filledHtml = htmlContent.replaceFirst(
-        RegExp(r'(?<=<textarea id="inputText"[^>]*>)(.*?)(?=</textarea>)', dotAll: true),
-        escapedXml,
+      final bytes = await file.readAsBytes();
+
+      final apiBase = AppConstants.webApiBaseUrl;
+      final postUri = Uri.parse('$apiBase/api/mxl-temp').replace(
+        queryParameters: {'fileName': widget.document.fileName},
       );
 
-      // 3. Aggiungi lo script che preme automaticamente "Genera spartito"
-      final scriptToAdd = '''
-      <script>
-        setTimeout(function() {
-          var btn = document.getElementById('processBtn');
-          if (btn) { btn.click(); }
-        }, 1000);
-      </script>
-      ''';
+      final res = await http
+          .post(
+            postUri,
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'X-File-Name': widget.document.fileName,
+            },
+            body: bytes,
+          )
+          .timeout(const Duration(seconds: 60));
 
-      final finalHtml = filledHtml.replaceFirst('</body>', scriptToAdd + '</body>');
-
-      // 4. Salva e apri nel browser
-      final appDocDir = await getApplicationDocumentsDirectory();
-      final safeDir = Directory('${appDocDir.path}/viewers');
-      if (!await safeDir.exists()) {
-        await safeDir.create(recursive: true);
+      if (res.statusCode != 200) {
+        throw 'Backend HTTP ${res.statusCode}: ${res.body}';
       }
 
-      final outputFile = File(
-        '${safeDir.path}/mxl_viewer_${DateTime.now().millisecondsSinceEpoch}.html',
-      );
-      await outputFile.writeAsString(finalHtml, flush: true);
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final id = data['id'] as String?;
+      if (id == null) throw 'Risposta backend senza id';
 
-      // 5. Apri nel browser
-      if (await canLaunchUrl(Uri.file(outputFile.path))) {
-        await launchUrl(Uri.file(outputFile.path), mode: LaunchMode.externalApplication);
+      final viewerUri = Uri.parse('$apiBase/mxl-viewer').replace(
+        queryParameters: {
+          'id': id,
+          'fileName': widget.document.fileName,
+        },
+      );
+
+      print('🌐 Apro viewer MXL: $viewerUri');
+
+      if (await canLaunchUrl(viewerUri)) {
+        await launchUrl(viewerUri, mode: LaunchMode.externalApplication);
       } else {
-        throw 'Impossibile aprire il browser';
+        throw 'Impossibile aprire il browser per $viewerUri';
       }
     } catch (e) {
       if (mounted) {
@@ -118,13 +120,16 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
           SnackBar(
             content: Text('❌ Errore: $e'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isOpening = false);
     }
   }
 
-  // 🔥 APRI CON APP ESTERNA (Finale)
+  /// Apre il file con l'app di sistema (Finale, MuseScore, ecc.)
   Future<void> _openWithDefaultApp() async {
     try {
       final file = File(widget.document.filePath ?? '');
@@ -166,8 +171,8 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.open_in_browser),
-            onPressed: _openInBrowser,
-            tooltip: 'Apri nel browser',
+            onPressed: _isOpening ? null : _openInBrowser,
+            tooltip: 'Apri nel browser (rendering web)',
           ),
           IconButton(
             icon: const Icon(Icons.open_in_new),
@@ -178,18 +183,18 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
       ),
       body: _isLoading
           ? const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Caricamento spartito MXL...'),
-          ],
-        ),
-      )
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Caricamento spartito MXL...'),
+                ],
+              ),
+            )
           : _error != null
-          ? _buildErrorView()
-          : _buildContentView(),
+              ? _buildErrorView()
+              : _buildContentView(),
     );
   }
 
@@ -200,9 +205,13 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline, size: 64, color: Colors.red),
+            const Icon(Icons.error_outline, size: 64, color: Colors.red),
             const SizedBox(height: 16),
-            Text(_error!, style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+            Text(
+              _error!,
+              style: const TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: _loadMxl,
@@ -237,7 +246,10 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                   children: [
                     Text(
                       '🎵 ${_metadata['title'] ?? widget.document.fileName}',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     Text(
                       '✍️ ${_metadata['composer'] ?? 'Compositore sconosciuto'}',
@@ -257,44 +269,63 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.library_music, size: 80, color: Colors.deepPurple.shade300),
+                  Icon(
+                    Icons.library_music,
+                    size: 80,
+                    color: Colors.deepPurple.shade300,
+                  ),
                   const SizedBox(height: 16),
-                  Text(
+                  const Text(
                     '🎼 Spartito MusicXML',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.bold,
                       color: Colors.deepPurple,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Text('${widget.document.fileName}', style: TextStyle(color: Colors.grey.shade600)),
-                  const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    alignment: WrapAlignment.center,
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed: _openInBrowser,
-                        icon: const Icon(Icons.open_in_browser),
-                        label: const Text('🌐 Apri nel browser'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: _openWithDefaultApp,
-                        icon: const Icon(Icons.open_in_new),
-                        label: const Text('🔧 Apri con Finale'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ],
+                  Text(
+                    widget.document.fileName,
+                    style: TextStyle(color: Colors.grey.shade600),
                   ),
+                  const SizedBox(height: 16),
+                  if (_isOpening)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Column(
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 12),
+                          Text('Caricamento spartito sul server…'),
+                        ],
+                      ),
+                    )
+                  else
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: _openInBrowser,
+                          icon: const Icon(Icons.open_in_browser),
+                          label: const Text('🌐 Apri nel browser'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _openWithDefaultApp,
+                          icon: const Icon(Icons.open_in_new),
+                          label: const Text('🔧 Apri con Finale'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
                 ],
               ),
             ),

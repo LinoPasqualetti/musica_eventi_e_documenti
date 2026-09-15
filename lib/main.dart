@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'screens/home_screen.dart';
 import 'providers/auth_provider.dart';
+import 'providers/registration_sync_provider.dart';   // <<< NUOVO
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +19,9 @@ class MyApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(
           create: (context) => AuthProvider(),
+        ),
+        ChangeNotifierProvider(                              // <<< NUOVO
+          create: (context) => RegistrationSyncProvider(),
         ),
       ],
       child: MaterialApp(

@@ -48,3 +48,12 @@ spartito_viewer.html
 
 # Environment
 .env
+# Backup e file temporanei (non vanno nel repo)
+_backup_pre_hetzner_*/
+_broken_backup_outside/
+_appunti/
+analisi_*.txt
+analisi_*.ps1
+
+# File generati da Flutter (auto)
+.flutter-plugins-dependencies

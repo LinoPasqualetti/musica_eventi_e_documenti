@@ -1,4 +1,6 @@
-﻿// lib/services/database_service.dart
+﻿// [MODIFICA] C:\musica_eventi_e_documenti\lib\services\database_service.dart
+
+// lib/services/database_service.dart
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
@@ -7,7 +9,8 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import '../models/document.dart';
 import '../models/song_document.dart';
-
+import 'document_push_service.dart';
+import 'pending_uploads_service.dart';
 // Importa FFI per desktop
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 // Importa FFI per web
@@ -30,8 +33,8 @@ class DatabaseService {
   static bool _isWeb = kIsWeb;
   static bool _forceCopyFromAsset = false;
 
-  // Versione del database - AUMENTATA A 3 PER LO STORAGE BLOB DI mxl/abc/midi/kar
-  static const int DB_VERSION = 3;
+  // Versione del database - AUMENTATA A 4 PER LA SYNC REGISTRAZIONI
+  static const int DB_VERSION = 4;
 
   DatabaseService() {
     _initDatabaseFactory();
@@ -290,6 +293,12 @@ class DatabaseService {
       await _backfillBlobContentFromAsset(db);
     }
 
+    if (oldVersion < 4) {
+      // Aggiunge colonne di sync a registrations + tabella sync_log
+      // (per la sincronizzazione delle iscrizioni col backend web)
+      await DatabaseMigration.runRegistrationsSyncMigration(db);
+    }
+
     PerformanceLogger.stop('_onUpgrade');
   }
 
@@ -462,6 +471,9 @@ class DatabaseService {
       )
     ''');
 
+    // ═══════════════════════════════════════════════════════════════
+    // TABELLA registrations - AGGIORNATA con colonne di sync
+    // ═══════════════════════════════════════════════════════════════
     await db.execute('''
       CREATE TABLE IF NOT EXISTS registrations (
         id TEXT PRIMARY KEY,
@@ -477,7 +489,26 @@ class DatabaseService {
         confirmed_at TEXT,
         cancelled_at TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT
+        updated_at TEXT,
+        sync_state TEXT NOT NULL DEFAULT 'clean',
+        last_pulled_at TEXT,
+        last_pushed_at TEXT,
+        remote_updated_at TEXT
+      )
+    ''');
+
+    // ═══════════════════════════════════════════════════════════════
+    // TABELLA sync_log - NUOVA
+    // ═══════════════════════════════════════════════════════════════
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        action TEXT NOT NULL,
+        entity TEXT NOT NULL DEFAULT 'registrations',
+        entity_id TEXT,
+        detail TEXT
       )
     ''');
 
@@ -556,6 +587,9 @@ class DatabaseService {
     // Crea indici per performance
     await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_event_song ON event_song_documents(event_song_id)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_document ON event_song_documents(document_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_reg_status ON registrations(status)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_reg_sync_state ON registrations(sync_state)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_log_ts ON sync_log(ts)');
   }
 
   // ============================================
@@ -1413,26 +1447,36 @@ class DatabaseService {
       return null;
     }
   }
+  /// Ritorna un documento includendo il campo `content` (BLOB).
+  /// Usato per il retry di push al web (che richiede il BLOB).
+  Future<Document?> getDocumentByIdWithContent(String id) async {
+    try {
+      final db = await database;
+      final maps = await db.query(
+        'documents',
+        where: 'id = ?',
+        whereArgs: [id],
+        // include TUTTE le colonne, incluso content
+      );
+      if (maps.isEmpty) return null;
+      return Document.fromMap(maps.first);
+    } catch (e) {
+      print('❌ getDocumentByIdWithContent fallito: $e');
+      return null;
+    }
+  }
 
   Future<void> insertDocument(Document document) async {
     PerformanceLogger.start('insertDocument');
     try {
       final db = await database;
-
-      // 1. Crea una copia della mappa del documento
       final Map<String, dynamic> documentMap = document.toMap();
-
-      // 2. Rimuovi i campi che NON appartengono alla tabella 'documents'
-      // (Questi campi vengono gestiti nelle tabelle ponte song_documents o event_song_documents)
       final dynamic songId = documentMap.remove('song_id');
-      documentMap.remove('songId'); // Rimuove anche l'eventuale chiave camelCase
+      documentMap.remove('songId');
 
-      // 3. Inserisci il documento nella tabella 'documents' (SENZA song_id)
       await db.insert('documents', documentMap);
 
-      // 4. Se il documento è associato a una canzone, crea la relazione in 'song_documents'
       if (songId != null && songId.toString().isNotEmpty) {
-        // Controlla se la relazione esiste già per evitare duplicati
         final existing = await db.query(
           'song_documents',
           where: 'document_id = ? AND song_id = ?',
@@ -1455,9 +1499,34 @@ class DatabaseService {
       print('✅ Documento inserito: ${document.fileName}');
       PerformanceLogger.info('Documento inserito', details: document.fileName);
       PerformanceLogger.stop('insertDocument');
+
+      // ─── NUOVO: PUSH AL WEB (fire and forget) ─────────────────────
+      _pushDocumentToWeb(document, songId?.toString()).catchError((e) {
+        print('⚠️ Push documento al web fallito: $e');
+      });
     } catch (e) {
       PerformanceLogger.error('insertDocument fallito', error: e);
       rethrow;
+    }
+  }
+
+  /// Pusha il documento al backend web in background.
+  /// Se fallisce, lo aggiunge a pending_uploads.json per un retry successivo.
+  Future<void> _pushDocumentToWeb(Document doc, String? songId) async {
+    final songIds = <String>[];
+    if (songId != null && songId.isNotEmpty) {
+      songIds.add(songId);
+    }
+
+    final ok = await DocumentPushService.pushDocument(doc, songIds: songIds);
+
+    if (ok) {
+      // Se era in pending (es. retry), rimuovilo
+      await PendingUploadsService.remove(doc.id);
+    } else {
+      // Salva in pending per retry
+      await PendingUploadsService.add(doc.id, doc.filePath ?? '');
+      print('📝 Documento salvato in pending_uploads: ${doc.id}');
     }
   }
 
@@ -1723,6 +1792,38 @@ class DatabaseService {
     }
   }
 
+  /// Conta, per ogni event_song di un evento, quanti documenti specifici
+  /// sono assegnati (da event_song_documents). Ritorna una mappa
+  /// songId -> conteggio.
+  Future<Map<String, int>> getEventSongDocumentsCountForEvent(String eventId) async {
+    PerformanceLogger.start('getEventSongDocumentsCountForEvent');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.rawQuery('''
+        SELECT es.song_id AS song_id, COUNT(esd.id) AS count
+        FROM event_songs es
+        LEFT JOIN event_song_documents esd ON es.id = esd.event_song_id
+        WHERE es.event_id = ?
+        GROUP BY es.song_id
+      ''', [eventId]);
+
+      final Map<String, int> countMap = {};
+      for (var row in result) {
+        final songId = row['song_id'] as String?;
+        final count = (row['count'] as int?) ?? 0;
+        if (songId != null) {
+          countMap[songId] = count;
+        }
+      }
+      PerformanceLogger.info('Conteggio documenti per event-song',
+          details: '${countMap.length} brani');
+      PerformanceLogger.stop('getEventSongDocumentsCountForEvent');
+      return countMap;
+    } catch (e) {
+      PerformanceLogger.error('getEventSongDocumentsCountForEvent fallito', error: e);
+      return {};
+    }
+  }
   /// Ottiene tutti i documenti di un evento (raggruppati per brano) - usa la vista
   Future<Map<String, List<Map<String, dynamic>>>> getDocumentsByEvent(String eventId) async {
     return getEventDocumentsGrouped(eventId);
@@ -1928,6 +2029,202 @@ class DatabaseService {
     } catch (e) {
       PerformanceLogger.error('deleteRegistration fallito', error: e);
       rethrow;
+    }
+  }
+
+  // ========== METODI SYNC REGISTRAZIONI (NUOVI) ==========
+
+  /// Inserisce una registrazione solo se non esiste già (per id).
+  /// Ritorna `true` se ha inserito, `false` se esisteva già.
+  /// Idempotente: puoi chiamarlo N volte con lo stesso input.
+  Future<bool> insertRegistrationIfAbsent(Registration r) async {
+    PerformanceLogger.start('insertRegistrationIfAbsent');
+    try {
+      final db = await database;
+      final now = DateTime.now().toUtc().toIso8601String();
+
+      final rowId = await db.rawInsert('''
+        INSERT OR IGNORE INTO registrations (
+          id, event_id, user_id, status,
+          instrument_choice, reading_level, improvisation_level,
+          selected_song_ids, notes, admin_notes,
+          confirmed_at, cancelled_at,
+          created_at, updated_at,
+          sync_state, last_pulled_at, remote_updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'clean', ?, ?)
+      ''', [
+        r.id,
+        r.eventId,
+        r.userId,
+        r.status,
+        r.instrumentChoice,
+        r.readingLevel,
+        r.improvisationLevel,
+        r.selectedSongIds,
+        r.notes,
+        r.adminNotes,
+        r.confirmedAt,
+        r.cancelledAt,
+        r.createdAt,
+        r.updatedAt,
+        now,          // last_pulled_at
+        r.updatedAt,  // remote_updated_at
+      ]);
+
+      final inserted = rowId > 0;
+      PerformanceLogger.info(
+        'insertRegistrationIfAbsent',
+        details: inserted ? 'inserito ${r.id}' : 'già presente ${r.id}',
+      );
+      PerformanceLogger.stop('insertRegistrationIfAbsent');
+      return inserted;
+    } catch (e) {
+      PerformanceLogger.error('insertRegistrationIfAbsent fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Ritorna le registrazioni modificate localmente e non ancora pushate.
+  Future<List<Registration>> getDirtyRegistrations() async {
+    PerformanceLogger.start('getDirtyRegistrations');
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'registrations',
+        where: "sync_state = 'dirty'",
+        orderBy: 'updated_at ASC',
+      );
+      final result = rows.map((m) => Registration.fromMap(m)).toList();
+      PerformanceLogger.info('Dirty registrations', details: '${result.length}');
+      PerformanceLogger.stop('getDirtyRegistrations');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getDirtyRegistrations fallito', error: e);
+      return [];
+    }
+  }
+
+  /// Marca una registrazione come "clean" (push riuscito).
+  Future<void> markRegistrationClean(String id) async {
+    try {
+      final db = await database;
+      await db.update(
+        'registrations',
+        {
+          'sync_state': 'clean',
+          'last_pushed_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    } catch (e) {
+      PerformanceLogger.error('markRegistrationClean fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Marca una registrazione come "dirty" (modifica locale non ancora pushata).
+  Future<void> markRegistrationDirty(String id) async {
+    try {
+      final db = await database;
+      await db.update(
+        'registrations',
+        {'sync_state': 'dirty'},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    } catch (e) {
+      PerformanceLogger.error('markRegistrationDirty fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Aggiorna lo status locale E marca dirty (per le azioni admin).
+  Future<void> setRegistrationStatusLocal(
+      String id,
+      String status, {
+        String? adminNotes,
+      }) async {
+    PerformanceLogger.start('setRegistrationStatusLocal');
+    try {
+      final db = await database;
+      final values = <String, Object?>{
+        'status': status,
+        'sync_state': 'dirty',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      if (adminNotes != null) values['admin_notes'] = adminNotes;
+
+      await db.update(
+        'registrations',
+        values,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      PerformanceLogger.info('setRegistrationStatusLocal',
+          details: '$id -> $status');
+      PerformanceLogger.stop('setRegistrationStatusLocal');
+    } catch (e) {
+      PerformanceLogger.error('setRegistrationStatusLocal fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Aggiorna i timestamp di pull per un batch di id (post mark-exported).
+  Future<void> markRegistrationsPulled(List<String> ids) async {
+    if (ids.isEmpty) return;
+    try {
+      final db = await database;
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.transaction((txn) async {
+        for (final id in ids) {
+          await txn.update(
+            'registrations',
+            {'last_pulled_at': now},
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+        }
+      });
+    } catch (e) {
+      PerformanceLogger.error('markRegistrationsPulled fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Scrive una riga in `sync_log`. Non solleva mai: il log non deve
+  /// bloccare il flusso di sincronizzazione.
+  Future<void> logSync({
+    required String direction, // 'pull' | 'push'
+    required String action,    // 'inserted' | 'skipped' | 'error' | ...
+    String? entityId,
+    String? detail,
+    String entity = 'registrations',
+  }) async {
+    try {
+      final db = await database;
+      await db.insert('sync_log', {
+        'ts': DateTime.now().toUtc().toIso8601String(),
+        'direction': direction,
+        'action': action,
+        'entity': entity,
+        'entity_id': entityId,
+        'detail': detail,
+      });
+    } catch (e) {
+      // Non rilanciare: il log non deve rompere la sync.
+      print('⚠️ logSync fallito: $e');
+    }
+  }
+
+  /// Ritorna le ultime N righe del log di sincronizzazione.
+  Future<List<Map<String, dynamic>>> getSyncLog({int limit = 100}) async {
+    try {
+      final db = await database;
+      return await db.query('sync_log', orderBy: 'ts DESC', limit: limit);
+    } catch (e) {
+      PerformanceLogger.error('getSyncLog fallito', error: e);
+      return [];
     }
   }
 

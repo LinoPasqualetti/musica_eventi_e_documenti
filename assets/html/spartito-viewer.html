@@ -1,3 +1,4 @@
+<!-- [MODIFICA] C:\musica_eventi_e_documenti\assets\html\spartito-viewer.html -->
 <!DOCTYPE html>
 <html lang="it">
 <head>
@@ -187,6 +188,24 @@
       font-size: 0.7rem;
       opacity: 0.6;
     }
+
+    /* 🔥 MODALITÀ EMBED (iniettata da Flutter): niente header, niente sorgente */
+    body.abc-embed header,
+    body.abc-embed #source-panel,
+    body.abc-embed #status { display: none !important; }
+
+    body.abc-embed .wrap { padding: 10px 10px 30px; max-width: 100%; }
+
+    body.abc-embed #output-panel {
+      display: block !important; /* forza la visibilità */
+      margin-bottom: 0;
+      padding: 0;
+      border: none;
+      background: transparent;
+    }
+    body.abc-embed #output-panel h2 { display: none; } /* già mostrato dal titolo del browser */
+
+    body.abc-embed details { display: none; } /* niente "mostra codice ABC" */
   </style>
 </head>
 <body>
@@ -197,7 +216,7 @@
     <div class="staff-rule"></div>
   </header>
 
-  <section class="panel">
+  <section class="panel" id="source-panel">
     <h2>Sorgente</h2>
     <label for="inputText">Testo ABC oppure XML del MusicXML (incollalo qui)</label>
     <textarea id="inputText" placeholder="X:1&#10;T:Titolo del brano&#10;M:4/4&#10;L:1/8&#10;K:C&#10;C2 D2 E2 F2 | G4 z4 |"></textarea>
@@ -249,6 +268,27 @@
 </div>
 
 <script>
+  /* ============================================================
+   *  PAYLOAD INIETTATO DA FLUTTER (se presente → modalità embed)
+   *  Struttura attesa:
+   *    {
+   *      abc:       string,   // contenuto ABC obbligatorio
+   *      transpose: number,   // semitoni (default 0)
+   *      instrument:number,   // semitoni dello strumento (default 0)
+   *      zoom:      number,   // 0.5 – 2.5 (default 1.0)
+   *      fileName:  string    // per il <title>
+   *    }
+   * ============================================================ */
+  /*__ABC_VIEWER_PAYLOAD__*/ // <- Flutter sostituisce questo commento con `window.__ABC_VIEWER_PAYLOAD__ = {...};`
+
+  const EMBED_MODE = !!(window.__ABC_VIEWER_PAYLOAD__);
+  if (EMBED_MODE) {
+    document.body.classList.add('abc-embed');
+    if (window.__ABC_VIEWER_PAYLOAD__.fileName) {
+      document.title = window.__ABC_VIEWER_PAYLOAD__.fileName + ' — Spartito';
+    }
+  }
+
   /* ============ Utilità di conversione MusicXML -> ABC ============ */
 
   const KIND_MAP = {
@@ -263,16 +303,8 @@
   const MINOR_KEYS = ["Ab","Eb","Bb","F","C","G","D","A","E","B","F#","C#","G#","D#","A#"];
 
   const TRACK_COLORS = [
-    '#E74C3C', // Rosso
-    '#3498DB', // Blu
-    '#2ECC71', // Verde
-    '#F39C12', // Arancione
-    '#9B59B6', // Viola
-    '#1ABC9C', // Turchese
-    '#E67E22', // Arancione scuro
-    '#2C3E50', // Blu scuro
-    '#8E44AD', // Viola scuro
-    '#27AE60', // Verde scuro
+    '#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6',
+    '#1ABC9C', '#E67E22', '#2C3E50', '#8E44AD', '#27AE60',
   ];
 
   function pitchToAbc(step, alter, octave){
@@ -307,7 +339,6 @@
     const doc = new DOMParser().parseFromString(xmlText, "application/xml");
     if (doc.querySelector("parsererror")) throw new Error("XML non valido o non leggibile.");
 
-    // 🔥 LEGGI TUTTE LE PARTI (non solo la prima!)
     const partList = Array.from(doc.querySelectorAll("part"));
     if (partList.length === 0) throw new Error("Nessuna parte trovata.");
 
@@ -321,7 +352,6 @@
     let beats = 4, beatType = 4;
     let headerCaptured = false;
 
-    // Array per le voci multiple
     let allPartsAbc = [];
     let voicesMeta = [];
 
@@ -378,12 +408,6 @@
               if(tie) token += "-";
             }
 
-            // Genera gli accordi se presenti nella prima voce
-            const lyricEl = el.querySelector("lyric text");
-            if(lyricEl) {
-              // (Ignoriamo i testi per ora per semplicità)
-            }
-
             if(isChordTone && beatsInMeasure.length){
               const last = beatsInMeasure[beatsInMeasure.length-1];
               if(last.type === "note"){
@@ -414,13 +438,12 @@
 
       if(currentLine.trim()) bodyLines.push(currentLine.trim());
 
-      // Crea la voce ABC per questa parte
-      let partAbc = "V:" + (partIndex + 1) + " " + (partIndex === 0 ? "clef=treble" : "clef=treble") + " name=\"" + partName + "\"\n";
+      let partAbc = "V:" + (partIndex + 1) + " clef=treble name=\"" + partName + "\"\n";
       partAbc += bodyLines.join("\n");
 
       allPartsAbc.push(partAbc);
       voicesMeta.push({
-        id: partIndex + 1,
+        id: String(partIndex + 1),
         label: partName,
         index: partIndex + 1,
         color: TRACK_COLORS[partIndex % TRACK_COLORS.length]
@@ -430,7 +453,6 @@
     const fifthsIdx = Math.max(0, Math.min(14, fifths + 7));
     const keyLetter = (mode === "minor") ? MINOR_KEYS[fifthsIdx] + "m" : MAJOR_KEYS[fifthsIdx];
 
-    // Creazione dell'ABC con tutte le voci
     let abc = `X:1\nT:${title}\n`;
     if(composer) abc += `C:${composer}\n`;
     abc += `M:${beats}/${beatType}\nL:1/8\nK:${keyLetter}\n`;
@@ -442,7 +464,6 @@
       abc += allPartsAbc[0];
     }
 
-    // Salva le informazioni delle tracce
     window._trackInfo = voicesMeta;
 
     return abc;
@@ -493,7 +514,6 @@
       sel.appendChild(opt);
     }
   }
-  buildTransposeOptions();
 
   function buildInstrumentOptions(){
     const sel = document.getElementById("instrumentSel");
@@ -505,15 +525,14 @@
       sel.appendChild(opt);
     });
   }
-  buildInstrumentOptions();
 
   function setStatus(msg, kind){
     const el = document.getElementById("status");
+    if (!el) return;
     el.textContent = msg;
     el.className = "status" + (kind ? " " + kind : "");
   }
 
-  // 🔥 Funzione per filtrare le voci dall'ABC
   function filterTracks(abc, trackIds) {
     if (!trackIds || trackIds.length === 0) return abc;
 
@@ -527,9 +546,7 @@
       if (voiceMatch) {
         currentVoice = voiceMatch[1];
         inVoice = trackIds.includes(currentVoice);
-        if (inVoice) {
-          filtered.push(line);
-        }
+        if (inVoice) filtered.push(line);
         continue;
       }
 
@@ -551,7 +568,6 @@
     return filtered.join('\n');
   }
 
-  // 🔥 Renderizza le tracce disponibili
   function renderTrackSelector(trackInfo) {
     const container = document.getElementById('tracks-container');
     container.innerHTML = '<span style="font-size:0.8rem;color:var(--ink-soft);margin-right:8px;">🎵 Tracce:</span>';
@@ -581,7 +597,7 @@
 
         if (activeTracks.length > 0) {
           const filteredAbc = filterTracks(currentAbc, activeTracks);
-          renderAndPlay(filteredAbc, parseInt(document.getElementById('transposeSel').value));
+          renderAndPlay(filteredAbc, parseInt(document.getElementById('transposeSel').value, 10));
         }
       });
 
@@ -596,7 +612,6 @@
     document.getElementById("abc-output").value = abc;
     document.getElementById("output-panel").style.display = "block";
 
-    // 🔥 Visualizza TUTTE le voci!
     const visualObjs = ABCJS.renderAbc("sheet-music", abc, {
       responsive: "resize",
       add_classes: true,
@@ -661,10 +676,6 @@
     await synthControl.setTune(tuneObject, false);
   }
 
-  document.getElementById("stopBtn").addEventListener("click", () => {
-    if(synthControl) synthControl.pause();
-  });
-
   async function applyTranspose(semitones){
     if(!currentAbc) return;
     setStatus("Ritrasposizione in corso...", "");
@@ -675,20 +686,6 @@
       setStatus("Errore nella trasposizione: " + err.message, "error");
     }
   }
-
-  document.getElementById("transposeSel").addEventListener("change", (e) => {
-    const val = parseInt(e.target.value, 10);
-    const matchIdx = INSTRUMENT_PRESETS.findIndex(p => p.semis === val);
-    document.getElementById("instrumentSel").value = matchIdx >= 0 ? matchIdx : INSTRUMENT_PRESETS.length - 1;
-    applyTranspose(val);
-  });
-
-  document.getElementById("instrumentSel").addEventListener("change", (e) => {
-    const preset = INSTRUMENT_PRESETS[parseInt(e.target.value, 10)];
-    if(preset.semis === null) return;
-    document.getElementById("transposeSel").value = preset.semis;
-    applyTranspose(preset.semis);
-  });
 
   function splitTunebook(abcText){
     const lines = abcText.split(/\r?\n/);
@@ -722,6 +719,29 @@
     }
   }
 
+  /* ============ Bootstrap dei controlli UI ============ */
+
+  buildTransposeOptions();
+  buildInstrumentOptions();
+
+  document.getElementById("stopBtn").addEventListener("click", () => {
+    if(synthControl) synthControl.pause();
+  });
+
+  document.getElementById("transposeSel").addEventListener("change", (e) => {
+    const val = parseInt(e.target.value, 10);
+    const matchIdx = INSTRUMENT_PRESETS.findIndex(p => p.semis === val);
+    document.getElementById("instrumentSel").value = matchIdx >= 0 ? matchIdx : INSTRUMENT_PRESETS.length - 1;
+    applyTranspose(val);
+  });
+
+  document.getElementById("instrumentSel").addEventListener("change", (e) => {
+    const preset = INSTRUMENT_PRESETS[parseInt(e.target.value, 10)];
+    if(preset.semis === null) return;
+    document.getElementById("transposeSel").value = preset.semis;
+    applyTranspose(preset.semis);
+  });
+
   document.getElementById("tuneSel").addEventListener("change", (e) => {
     selectTune(parseInt(e.target.value, 10));
   });
@@ -732,7 +752,6 @@
     setStatus("Elaborazione...", "");
     document.getElementById("processBtn").disabled = true;
 
-    // Nascondi il selettore tracce
     document.getElementById('tracks-container').style.display = 'none';
 
     try{
@@ -791,6 +810,56 @@
   }
 
   document.getElementById("processBtn").addEventListener("click", handleProcess);
+
+  /* ============ AUTO-BOOT IN MODALITÀ EMBED ============ */
+  if (EMBED_MODE) {
+    window.addEventListener("DOMContentLoaded", async () => {
+      const p = window.__ABC_VIEWER_PAYLOAD__;
+      const abc = (p.abc || "").trim();
+      if (!abc) {
+        document.getElementById("output-panel").style.display = "block";
+        document.getElementById("sheet-music").innerHTML =
+          '<div class="empty-hint">Nessun contenuto ABC fornito.</div>';
+        return;
+      }
+
+      // Preset strumento: cerca il preset con semis === p.instrument, altrimenti 0
+      const presetIdx = INSTRUMENT_PRESETS.findIndex(x => x.semis === (p.instrument || 0));
+      document.getElementById("instrumentSel").value = presetIdx >= 0 ? presetIdx : 0;
+      document.getElementById("transposeSel").value = p.transpose || 0;
+
+      // Zoom (CSS transform, per non rompere il responsive di abcjs)
+      if (p.zoom && p.zoom !== 1.0) {
+        const wrap = document.getElementById("sheet-wrap");
+        wrap.style.transformOrigin = "top left";
+        wrap.style.transform = `scale(${p.zoom})`;
+        wrap.style.width = `${100 / p.zoom}%`;
+      }
+
+      // Rileva multi-tune
+      const tuneCount = (abc.match(/^X:\s*\d+/gm) || []).length;
+      try {
+        if (tuneCount > 1) {
+          tuneChunks = splitTunebook(abc);
+          const tuneSel = document.getElementById("tuneSel");
+          tuneSel.innerHTML = "";
+          tuneChunks.forEach((t, i) => {
+            const opt = document.createElement("option");
+            opt.value = i;
+            opt.textContent = `${i + 1}. ${t.title}`;
+            tuneSel.appendChild(opt);
+          });
+          document.getElementById("tuneSelWrap").style.display = "flex";
+          await renderAndPlay(tuneChunks[0].abc, p.transpose || 0);
+        } else {
+          await renderAndPlay(abc, p.transpose || 0);
+        }
+        setStatus("Pronto.", "ok");
+      } catch (err) {
+        setStatus("Errore: " + err.message, "error");
+      }
+    });
+  }
 </script>
 </body>
 </html>

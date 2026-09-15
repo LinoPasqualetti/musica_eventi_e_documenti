@@ -1,3 +1,5 @@
+// [MODIFICA] C:\musica_eventi_e_documenti\lib\services\database_migration.dart
+
 // lib/services/database_migration.dart
 import 'package:sqflite/sqflite.dart';
 
@@ -5,7 +7,7 @@ class DatabaseMigration {
   /// Esegue tutte le migrazioni necessarie
   static Future<void> runMigrations(Database db) async {
     print('🔄 Avvio migrazioni database...');
-    
+
     try {
       await _createEventSongDocumentsTable(db);
       await _migrateExistingData(db);
@@ -19,7 +21,7 @@ class DatabaseMigration {
   /// Crea la tabella event_song_documents
   static Future<void> _createEventSongDocumentsTable(Database db) async {
     print('📋 Creazione tabella event_song_documents...');
-    
+
     await db.execute('''
       CREATE TABLE IF NOT EXISTS event_song_documents (
         id TEXT PRIMARY KEY,
@@ -34,18 +36,18 @@ class DatabaseMigration {
         UNIQUE(event_song_id, document_id)
       )
     ''');
-    
+
     // Crea indici per performance
     await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_event_song ON event_song_documents(event_song_id)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_document ON event_song_documents(document_id)');
-    
+
     print('✅ Tabella event_song_documents creata');
   }
 
   /// Migra i dati esistenti dalla relazione song_documents a event_song_documents
   static Future<void> _migrateExistingData(Database db) async {
     print('🔄 Migrazione dati esistenti...');
-    
+
     // Verifica se ci sono dati da migrare
     final existingDocs = await db.query('event_song_documents', limit: 1);
     if (existingDocs.isNotEmpty) {
@@ -65,21 +67,21 @@ class DatabaseMigration {
     for (var es in eventSongs) {
       final eventSongId = es['id'] as String;
       final songId = es['song_id'] as String;
-      
+
       // Trova i documenti per questo brano
       final songDocs = await db.query(
         'song_documents',
         where: 'song_id = ?',
         whereArgs: [songId],
       );
-      
+
       if (songDocs.isEmpty) continue;
-      
+
       // Inserisci ogni documento come evento-specifico
       for (int i = 0; i < songDocs.length; i++) {
         final doc = songDocs[i];
         final newId = DateTime.now().millisecondsSinceEpoch.toString() + '_${migratedCount}';
-        
+
         await db.insert('event_song_documents', {
           'id': newId,
           'event_song_id': eventSongId,
@@ -91,7 +93,7 @@ class DatabaseMigration {
         migratedCount++;
       }
     }
-    
+
     print('✅ Migrati $migratedCount documenti su ${eventSongs.length} relazioni');
   }
 
@@ -148,5 +150,57 @@ class DatabaseMigration {
     }
 
     print('✅ Migrazione storage blob completata (content da popolare con lo script dedicato)');
+  }
+
+  /// Aggiunge le colonne di sincronizzazione a `registrations`
+  /// e crea la tabella `sync_log`.
+  /// Idempotente: si può rieseguire senza danni.
+  static Future<void> runRegistrationsSyncMigration(Database db) async {
+    print('🔄 Migrazione sync registrazioni...');
+
+    // ── 1. Colonne di sync su registrations ────────────────────────
+    final cols = await db.rawQuery('PRAGMA table_info(registrations)');
+    final existing = cols.map((c) => c['name'] as String).toSet();
+
+    if (!existing.contains('sync_state')) {
+      await db.execute(
+        "ALTER TABLE registrations ADD COLUMN sync_state TEXT NOT NULL DEFAULT 'clean'",
+      );
+    }
+    if (!existing.contains('last_pulled_at')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN last_pulled_at TEXT');
+    }
+    if (!existing.contains('last_pushed_at')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN last_pushed_at TEXT');
+    }
+    if (!existing.contains('remote_updated_at')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN remote_updated_at TEXT');
+    }
+
+    // ── 2. Indici utili ────────────────────────────────────────────
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_reg_status     ON registrations(status)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_reg_sync_state ON registrations(sync_state)',
+    );
+
+    // ── 3. Tabella di log sync ─────────────────────────────────────
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_log (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts        TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        action    TEXT NOT NULL,
+        entity    TEXT NOT NULL DEFAULT 'registrations',
+        entity_id TEXT,
+        detail    TEXT
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_log_ts ON sync_log(ts)',
+    );
+
+    print('✅ Migrazione sync registrazioni completata');
   }
 }

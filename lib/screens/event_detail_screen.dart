@@ -21,6 +21,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
   final DatabaseService _db = DatabaseService();
   Event? _event;
   List<Song> _songs = [];
+  Map<String, int> _documentsCountBySong = {};
   bool _isLoading = true;
   bool _isRefreshing = false;
 
@@ -83,17 +84,20 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
     try {
       final event = await _db.getEventById(widget.eventId);
       final songs = await _db.getSongsByEvent(widget.eventId);
+      final counts = await _db.getEventSongDocumentsCountForEvent(widget.eventId);
 
       if (mounted) {
         setState(() {
           _event = event;
           _songs = songs;
+          _documentsCountBySong = counts;
           _isLoading = false;
         });
       }
 
       print('✅ Evento caricato: ${event?.title}');
       print('✅ Canzoni trovate: ${songs.length}');
+      print('✅ Conteggio documenti: $counts');
     } catch (e, stackTrace) {
       print('❌ ERRORE in _loadData: $e');
       print('📚 STACK: $stackTrace');
@@ -368,46 +372,59 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                       children: [
                         // 🔥 INTESTAZIONE SCALETTA CON BOTTONI
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                           child: Row(
                             children: [
-                              const Icon(
-                                Icons.playlist_play,
-                                color: Colors.white54,
-                                size: 14,
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                '🎶 Scaletta (${_songs.length})',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white70,
-                                ),
-                              ),
-                              const Spacer(),
-                              // 🔥 BOTTONE GESTISCI SCALETTA (solo admin)
+                              // 🔥 BOTTONE GESTISCI SCALETTA (solo admin) - con conteggio brani
                               if (isAdmin)
-                                IconButton(
+                                ElevatedButton.icon(
                                   icon: const Icon(
                                     Icons.playlist_add,
-                                    color: Colors.white70,
-                                    size: 18,
+                                    size: 14,
+                                  ),
+                                  label: Text(
+                                    'Gestisci Scaletta (${_songs.length})',
+                                    style: const TextStyle(fontSize: 11),
                                   ),
                                   onPressed: _navigateToSongsAssignment,
-                                  tooltip: 'Gestisci Scaletta',
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white.withOpacity(0.15),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    minimumSize: const Size(0, 28),
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    elevation: 0,
+                                  ),
                                 ),
-                              // 🔥 BOTTONE DOCUMENTI (solo admin)
+                              const SizedBox(width: 8),
+                              // 🔥 BOTTONE GESTISCI DOCUMENTI (solo admin)
                               if (isAdmin)
-                                IconButton(
+                                ElevatedButton.icon(
                                   icon: const Icon(
                                     Icons.folder,
-                                    color: Colors.white70,
-                                    size: 18,
+                                    size: 14,
+                                  ),
+                                  label: const Text(
+                                    'Gestisci Documenti',
+                                    style: TextStyle(fontSize: 11),
                                   ),
                                   onPressed: _showSongSelectionDialog,
-                                  tooltip: 'Gestisci Documenti',
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white.withOpacity(0.15),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    minimumSize: const Size(0, 28),
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    elevation: 0,
+                                  ),
                                 ),
+                              const Spacer(),
                             ],
                           ),
                         ),
@@ -443,11 +460,25 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                                 children: _songs.asMap().entries.map((entry) {
                                   final index = entry.key;
                                   final song = entry.value;
+                                  final docCount = _documentsCountBySong[song.id] ?? 0;
                                   return SizedBox(
                                     width: (MediaQuery.of(context).size.width - 36) / 2,
                                     height: 24,
                                     child: Row(
                                       children: [
+                                        // 🔥 BOTTONE DOCUMENTI PER SINGOLO BRANO (admin) - primo elemento, icona gialla
+                                        if (isAdmin)
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.folder_open,
+                                              color: Colors.amber,
+                                              size: 14,
+                                            ),
+                                            onPressed: () => _navigateToDocuments(song),
+                                            tooltip: 'Documenti del brano',
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(),
+                                          ),
                                         SizedBox(
                                           width: 16,
                                           child: Text(
@@ -459,7 +490,21 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                                             ),
                                           ),
                                         ),
+                                        // 🔥 CONTATORE DOCUMENTI SPECIFICI DI QUESTO EVENTO
+                                        if (docCount > 0)
+                                          Padding(
+                                            padding: const EdgeInsets.only(left: 4),
+                                            child: Text(
+                                              '($docCount)',
+                                              style: TextStyle(
+                                                color: Colors.amber.withOpacity(0.8),
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
                                         const SizedBox(width: 4),
+
                                         Expanded(
                                           child: Text(
                                             song.title,
@@ -472,19 +517,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                                             overflow: TextOverflow.ellipsis,
                                           ),
                                         ),
-                                        // 🔥 BOTTONE DOCUMENTI PER SINGOLO BRANO (admin)
-                                        if (isAdmin)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.folder_open,
-                                              color: Colors.white38,
-                                              size: 14,
-                                            ),
-                                            onPressed: () => _navigateToDocuments(song),
-                                            tooltip: 'Documenti del brano',
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                          ),
+
                                       ],
                                     ),
                                   );

@@ -1,5 +1,3 @@
-// [MODIFICA] C:\musica_eventi_e_documenti\lib\services\database_migration.dart
-
 // lib/services/database_migration.dart
 import 'package:sqflite/sqflite.dart';
 
@@ -37,9 +35,12 @@ class DatabaseMigration {
       )
     ''');
 
-    // Crea indici per performance
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_event_song ON event_song_documents(event_song_id)');
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_esd_document ON event_song_documents(document_id)');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_esd_event_song ON event_song_documents(event_song_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_esd_document ON event_song_documents(document_id)',
+    );
 
     print('✅ Tabella event_song_documents creata');
   }
@@ -48,27 +49,23 @@ class DatabaseMigration {
   static Future<void> _migrateExistingData(Database db) async {
     print('🔄 Migrazione dati esistenti...');
 
-    // Verifica se ci sono dati da migrare
     final existingDocs = await db.query('event_song_documents', limit: 1);
     if (existingDocs.isNotEmpty) {
       print('⚠️ Dati già presenti, salto migrazione');
       return;
     }
 
-    // Ottieni tutte le relazioni event_songs
     final eventSongs = await db.query('event_songs');
     if (eventSongs.isEmpty) {
       print('ℹ️ Nessuna relazione event_songs trovata');
       return;
     }
 
-    // Per ogni event_song, trova i documenti associati al brano via song_documents
     int migratedCount = 0;
     for (var es in eventSongs) {
       final eventSongId = es['id'] as String;
       final songId = es['song_id'] as String;
 
-      // Trova i documenti per questo brano
       final songDocs = await db.query(
         'song_documents',
         where: 'song_id = ?',
@@ -77,10 +74,10 @@ class DatabaseMigration {
 
       if (songDocs.isEmpty) continue;
 
-      // Inserisci ogni documento come evento-specifico
       for (int i = 0; i < songDocs.length; i++) {
         final doc = songDocs[i];
-        final newId = DateTime.now().millisecondsSinceEpoch.toString() + '_${migratedCount}';
+        final newId =
+            DateTime.now().millisecondsSinceEpoch.toString() + '_${migratedCount}';
 
         await db.insert('event_song_documents', {
           'id': newId,
@@ -98,10 +95,6 @@ class DatabaseMigration {
   }
 
   /// Aggiunge le colonne storage_mode/content/mime_type a `documents` (se mancanti)
-  /// e imposta storage_mode/mime_type per le righe esistenti, in base al doc_type.
-  /// Il campo `content` resta NULL: va popolato con lo script
-  /// lib/scripts/populate_blob_content.dart, eseguito una volta sulla macchina
-  /// dove risiedono ancora i file originali.
   static Future<void> runBlobStorageMigration(Database db) async {
     print('🔄 Migrazione storage blob per documents...');
 
@@ -149,16 +142,13 @@ class DatabaseMigration {
       );
     }
 
-    print('✅ Migrazione storage blob completata (content da popolare con lo script dedicato)');
+    print('✅ Migrazione storage blob completata');
   }
 
   /// Aggiunge le colonne di sincronizzazione a `registrations`
-  /// e crea la tabella `sync_log`.
-  /// Idempotente: si può rieseguire senza danni.
   static Future<void> runRegistrationsSyncMigration(Database db) async {
     print('🔄 Migrazione sync registrazioni...');
 
-    // ── 1. Colonne di sync su registrations ────────────────────────
     final cols = await db.rawQuery('PRAGMA table_info(registrations)');
     final existing = cols.map((c) => c['name'] as String).toSet();
 
@@ -177,7 +167,6 @@ class DatabaseMigration {
       await db.execute('ALTER TABLE registrations ADD COLUMN remote_updated_at TEXT');
     }
 
-    // ── 2. Indici utili ────────────────────────────────────────────
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_reg_status     ON registrations(status)',
     );
@@ -185,7 +174,6 @@ class DatabaseMigration {
       'CREATE INDEX IF NOT EXISTS idx_reg_sync_state ON registrations(sync_state)',
     );
 
-    // ── 3. Tabella di log sync ─────────────────────────────────────
     await db.execute('''
       CREATE TABLE IF NOT EXISTS sync_log (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -202,5 +190,125 @@ class DatabaseMigration {
     );
 
     print('✅ Migrazione sync registrazioni completata');
+  }
+
+  /// Crea le tabelle `organs` e `organ_slots` per la gestione
+  /// dell'organico dei brani.
+  static Future<void> runOrgansMigration(Database db) async {
+    print('🔄 Migrazione organici (organs + organ_slots)...');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS organs (
+        id             TEXT PRIMARY KEY,
+        event_song_id  TEXT NOT NULL,
+        name           TEXT NOT NULL DEFAULT 'Organico standard',
+        notes          TEXT,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT,
+        deleted_at     TEXT,
+        FOREIGN KEY (event_song_id) REFERENCES event_songs(id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organs_event_song_id ON organs(event_song_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organs_deleted_at ON organs(deleted_at)',
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS organ_slots (
+        id           TEXT PRIMARY KEY,
+        organ_id     TEXT NOT NULL,
+        section      TEXT NOT NULL CHECK (section IN ('ritmica','armonica','solistica','orchestrale')),
+        instrument   TEXT NOT NULL,
+        quantity     INTEGER NOT NULL DEFAULT 1,
+        notes        TEXT,
+        order_index  INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT,
+        deleted_at   TEXT,
+        FOREIGN KEY (organ_id) REFERENCES organs(id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organ_slots_organ_id   ON organ_slots(organ_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organ_slots_section    ON organ_slots(section)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organ_slots_deleted_at ON organ_slots(deleted_at)',
+    );
+
+    print('✅ Migrazione organici completata');
+  }
+
+  /// Aggiunge le colonne per il collegamento all'organico su `registrations`:
+  /// - song_id           → brano di riferimento della candidatura
+  /// - organ_slot_id     → slot di organico scelto dall'utente
+  /// - time_description  → intervallo temporale in cui l'utente suonerà
+  /// - deleted_at        → soft delete
+  /// Idempotente: si può rieseguire senza danni.
+  static Future<void> runRegistrationsOrgansMigration(Database db) async {
+    print('🔄 Migrazione registrations per organico...');
+
+    final cols = await db.rawQuery('PRAGMA table_info(registrations)');
+    final existing = cols.map((c) => c['name'] as String).toSet();
+
+    if (!existing.contains('song_id')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN song_id TEXT');
+    }
+    if (!existing.contains('organ_slot_id')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN organ_slot_id TEXT');
+    }
+    if (!existing.contains('time_description')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN time_description TEXT');
+    }
+    if (!existing.contains('deleted_at')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN deleted_at TEXT');
+    }
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_reg_song_id ON registrations(song_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_reg_organ_slot_id ON registrations(organ_slot_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_reg_deleted_at ON registrations(deleted_at)',
+    );
+
+    print('✅ Migrazione registrations per organico completata');
+  }
+
+  /// Aggiunge le colonne candidate_name e candidate_email a `registrations`
+  /// per supportare candidature per conto terzi (scuole di musica, insegnanti).
+  /// Crea anche l'indice univoco (candidate_name, organ_slot_id).
+  /// Idempotente: si può rieseguire senza danni.
+  static Future<void> runRegistrationsCandidatesMigration(Database db) async {
+    print('🔄 Migrazione registrations per candidati...');
+
+    final cols = await db.rawQuery('PRAGMA table_info(registrations)');
+    final existing = cols.map((c) => c['name'] as String).toSet();
+
+    if (!existing.contains('candidate_name')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN candidate_name TEXT');
+    }
+    if (!existing.contains('candidate_email')) {
+      await db.execute('ALTER TABLE registrations ADD COLUMN candidate_email TEXT');
+    }
+
+    // Indice univoco: una persona non può candidarsi due volte allo stesso slot.
+    // Partial index: solo per record non cancellati.
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_reg_candidate_slot '
+          'ON registrations(candidate_name, organ_slot_id) '
+          'WHERE deleted_at IS NULL',
+    );
+
+    print('✅ Migrazione registrations per candidati completata');
   }
 }

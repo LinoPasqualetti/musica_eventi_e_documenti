@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../../services/database_service.dart';
 import '../../models/event_model.dart';
 import '../../models/song_model.dart';
+import 'candidature_screen.dart';
 import '../../models/registration_model.dart';
 import 'song_form_screen.dart';
 import 'event_song_documents.dart';
+import 'organ_editor_screen.dart';
 
 class EventSongsAssignment extends StatefulWidget {
   final Event event;
@@ -22,6 +24,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
   Map<String, int> _registrationsCount = {};
   Map<String, List<String>> _instrumentsBySong = {};
   Map<String, int> _documentsCount = {};
+  Map<String, int> _organSlotsCount = {};
   bool _isLoading = true;
   bool _isReordering = false;
 
@@ -40,6 +43,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
       final countMap = await _db.getRegistrationsCountBySongForEvent(widget.event.id);
       final instrumentsMap = await _db.getInstrumentsBySongForEvent(widget.event.id);
       final docsCountMap = await _db.getDocumentsCountBySong();
+      final organCountMap = await _db.getOrganSlotsCountByEvent(widget.event.id);
 
       setState(() {
         _allSongs = allSongs;
@@ -47,6 +51,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
         _registrationsCount = countMap;
         _instrumentsBySong = instrumentsMap;
         _documentsCount = docsCountMap;
+        _organSlotsCount = organCountMap;
         _isLoading = false;
         _isReordering = false;
       });
@@ -67,7 +72,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     setState(() => _isReordering = true);
 
     try {
-      // Corregge l'indice per ListView
       if (newIndex > oldIndex) {
         newIndex -= 1;
       }
@@ -76,17 +80,15 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
       final Song item = reordered.removeAt(oldIndex);
       reordered.insert(newIndex, item);
 
-      // Aggiorna l'UI subito
       setState(() {
         _assignedSongs = reordered;
       });
 
-      // Salva il nuovo ordine nel database
       for (int i = 0; i < reordered.length; i++) {
         await _db.updateSongOrder(
           widget.event.id,
           reordered[i].id,
-          i, // order_index inizia da 0
+          i,
         );
       }
 
@@ -107,7 +109,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
             backgroundColor: Colors.red,
           ),
         );
-        // Ricarica i dati per ripristinare l'ordine corretto
         await _loadData();
       }
     } finally {
@@ -147,12 +148,10 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
   // 🔥 METODO PER LA RIMOZIONE CON DIALOG DI CONFERMA
   Future<void> _confirmRemoveSong(Song song) async {
     try {
-      // 🔥 Verifica in quanti altri eventi è presente la canzone
       final events = await _db.getEventsBySong(song.id);
       final otherEvents = events.where((e) => e.id != widget.event.id).toList();
       final hasOtherEvents = otherEvents.isNotEmpty;
 
-      // 🔥 Verifica se ci sono iscrizioni per questo brano nell'evento
       final registrations = await _db.getRegistrationsByEvent(widget.event.id);
       final hasRegistrations = registrations.any((reg) {
         if (reg.selectedSongIds != null && reg.selectedSongIds!.isNotEmpty) {
@@ -162,7 +161,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
         return false;
       });
 
-      // 🔥 Mostra il dialog di conferma
       final confirm = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
@@ -188,7 +186,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                 ),
                 const SizedBox(height: 12),
 
-                // 🔥 AVVISO: Canzone presente in altri eventi
                 if (hasOtherEvents)
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -254,7 +251,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                     ),
                   ),
 
-                // 🔥 AVVISO: Ci sono iscrizioni per questo brano
                 if (hasRegistrations)
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -310,7 +306,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
         ),
       );
 
-      // 🔥 Se l'utente ha confermato, procedi con la rimozione
       if (confirm == true) {
         await _removeSong(song);
       }
@@ -339,7 +334,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
           ),
         );
 
-        // 🔥 Torna indietro con risultato true per aggiornare la schermata precedente
         Navigator.pop(context, true);
       }
     } catch (e) {
@@ -354,18 +348,15 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     }
   }
 
-  // 🔥 NUOVO METODO: Modifica brano
+  // 🔥 METODO: Modifica brano
   Future<void> _editSong(Song song) async {
-    // 1. Verifica se la canzone è associata a più eventi
     final events = await _db.getEventsBySong(song.id);
     final isMultiEvent = events.length > 1;
 
-    // 2. Controlla le relazioni esistenti
     final relations = await _db.getSongRelations(song.id);
     final eventRelations = relations['events'] as List? ?? [];
     final docRelations = relations['documents'] as List? ?? [];
 
-    // 3. Mostra il dialog di modifica
     final titleController = TextEditingController(text: song.title);
     final composerController = TextEditingController(text: song.composer ?? '');
     final difficultyController = TextEditingController(text: song.difficulty ?? '');
@@ -393,7 +384,6 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // 🔥 AVVISO se la canzone è su più eventi
                   if (isMultiEvent)
                     Container(
                       padding: const EdgeInsets.all(12),
@@ -591,7 +581,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     );
   }
 
-  // 🔥 NUOVO METODO: Salva modifiche brano
+  // 🔥 METODO: Salva modifiche brano
   Future<void> _saveSongEdit({
     required Song song,
     required String title,
@@ -816,22 +806,71 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     );
   }
 
-  Widget _buildRegistrationIndicator(int count) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 8,
-        vertical: 2,
+  Widget _buildOrganIndicator(int count, Song song) {
+    return GestureDetector(
+      onTap: () => _openOrganEditor(song),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 6,
+          vertical: 2,
+        ),
+        decoration: BoxDecoration(
+          color: count > 0 ? Colors.deepPurple.shade100 : Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.queue_music,
+              size: 14,
+              color: count > 0 ? Colors.deepPurple.shade700 : Colors.grey.shade500,
+            ),
+            const SizedBox(width: 2),
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 12,
+                color: count > 0 ? Colors.deepPurple.shade700 : Colors.grey.shade500,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
       ),
-      decoration: BoxDecoration(
-        color: count > 0 ? Colors.green.shade100 : Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        '👥 $count',
-        style: TextStyle(
-          fontSize: 12,
-          color: count > 0 ? Colors.green.shade700 : Colors.grey.shade600,
-          fontWeight: FontWeight.bold,
+    );
+  }
+
+  Widget _buildCandidatureIndicator(int count, Song song) {
+    return GestureDetector(
+      onTap: () => _openCandidature(song),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 6,
+          vertical: 2,
+        ),
+        decoration: BoxDecoration(
+          color: count > 0 ? Colors.green.shade100 : Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.people,
+              size: 14,
+              color: count > 0 ? Colors.green.shade700 : Colors.grey.shade500,
+            ),
+            const SizedBox(width: 2),
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 12,
+                color: count > 0 ? Colors.green.shade700 : Colors.grey.shade500,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1137,6 +1176,90 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
     _createAndAddSong(title);
   }
 
+  // ============================================
+  // APRI EDITOR ORGANICO (F2)
+  // ============================================
+
+  Future<void> _openOrganEditor(Song song) async {
+    try {
+      final eventSongId = await _db.getEventSongId(widget.event.id, song.id);
+      if (eventSongId == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Errore: relazione evento-brano non trovata'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => OrganEditorScreen(
+            eventSongId: eventSongId,
+            songTitle: song.title,
+            eventTitle: widget.event.title,
+          ),
+        ),
+      );
+
+      await _loadData();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // ============================================
+  // APRI GESTIONE CANDIDATURE (F5) - placeholder
+  // ============================================
+
+  Future<void> _openCandidature(Song song) async {
+    try {
+      final eventSongId = await _db.getEventSongId(widget.event.id, song.id);
+      if (eventSongId == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Errore: relazione evento-brano non trovata'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CandidatureScreen(
+            eventSongId: eventSongId,
+            songTitle: song.title,
+            eventTitle: widget.event.title,
+          ),
+        ),
+      );
+
+      await _loadData();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1247,6 +1370,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                     final count = _registrationsCount[song.id] ?? 0;
                     final instruments = _instrumentsBySong[song.id] ?? [];
                     final docsCount = _documentsCount[song.id] ?? 0;
+                    final organSlotsCount = _organSlotsCount[song.id] ?? 0;
 
                     return Card(
                       key: Key(song.id),
@@ -1267,55 +1391,81 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                             Expanded(
                               child: Text(
                                 song.title,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            // 🔥 PULSANTE MODIFICA
-                            IconButton(
-                              icon: const Icon(
-                                Icons.edit,
-                                color: Colors.deepPurple,
-                              ),
-                              onPressed: () => _editSong(song),
-                              tooltip: 'Modifica brano',
-                              iconSize: 20,
-                            ),
+                            // [📄 N] Documenti
                             _buildDocumentIndicator(docsCount, song),
-                            const SizedBox(width: 8),
-                            _buildRegistrationIndicator(count),
-                            const SizedBox(width: 8),
-                            // 🔥 PULSANTE RIMUOVI CON CONFERMA
-                            IconButton(
-                              icon: const Icon(
-                                Icons.remove_circle,
-                                color: Colors.red,
-                              ),
-                              onPressed: () => _confirmRemoveSong(song),
-                              tooltip: 'Rimuovi dalla scaletta',
-                              iconSize: 20,
+                            const SizedBox(width: 6),
+                            // [🎼 N] Organico
+                            _buildOrganIndicator(organSlotsCount, song),
+                            const SizedBox(width: 6),
+                            // [👥 N] Candidature
+                            _buildCandidatureIndicator(count, song),
+                            const SizedBox(width: 4),
+                            // [⋮] Menu contestuale
+                            PopupMenuButton<String>(
+                              icon: const Icon(Icons.more_vert),
+                              onSelected: (value) async {
+                                switch (value) {
+                                  case 'modifica':
+                                    await _editSong(song);
+                                    break;
+                                  case 'candidature':
+                                    await _openCandidature(song);
+                                    break;
+                                  case 'rimuovi':
+                                    await _confirmRemoveSong(song);
+                                    break;
+                                }
+                              },
+                              itemBuilder: (context) => [
+                                const PopupMenuItem(
+                                  value: 'modifica',
+                                  child: ListTile(
+                                    leading: Icon(Icons.edit, color: Colors.deepPurple),
+                                    title: Text('Modifica brano'),
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'candidature',
+                                  child: ListTile(
+                                    leading: Icon(Icons.people, color: Colors.green),
+                                    title: Text('Gestisci candidature'),
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                ),
+                                const PopupMenuDivider(),
+                                PopupMenuItem(
+                                  value: 'rimuovi',
+                                  child: ListTile(
+                                    leading: const Icon(Icons.delete_outline, color: Colors.red),
+                                    title: const Text('Rimuovi dalla scaletta'),
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (song.composer != null)
-                              Text('Compositore: ${song.composer}'),
+                            if (song.composer != null) Text('Compositore: ${song.composer}'),
                             if (instruments.isNotEmpty)
                               Wrap(
                                 spacing: 4,
                                 runSpacing: 4,
                                 children: instruments.map((instrument) {
                                   return Chip(
-                                    label: Text(
-                                      instrument,
-                                      style: const TextStyle(fontSize: 11),
-                                    ),
+                                    label: Text(instrument, style: const TextStyle(fontSize: 11)),
                                     backgroundColor: Colors.deepPurple.shade50,
-                                    materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
+                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                     visualDensity: VisualDensity.compact,
                                   );
                                 }).toList(),
@@ -1323,12 +1473,8 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                             if (instruments.isEmpty && count > 0)
                               const Text(
                                 'Strumenti non specificati',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                ),
+                                style: TextStyle(fontSize: 12, color: Colors.grey),
                               ),
-                            // 🔥 Mostra se la canzone è su più eventi
                             FutureBuilder<List<Event>>(
                               future: _db.getEventsBySong(song.id),
                               builder: (context, snapshot) {
@@ -1338,18 +1484,14 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                       .length;
                                   return Container(
                                     margin: const EdgeInsets.only(top: 4),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                     decoration: BoxDecoration(
                                       color: Colors.orange.shade50,
                                       borderRadius: BorderRadius.circular(4),
                                     ),
                                     child: Text(
                                       '📌 Presente in ${snapshot.data!.length} eventi (${otherEvents} altro${otherEvents > 1 ? 'i' : ''})',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.orange.shade700,
-                                      ),
+                                      style: TextStyle(fontSize: 11, color: Colors.orange.shade700),
                                     ),
                                   );
                                 }

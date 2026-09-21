@@ -9,6 +9,8 @@
 # packages, and plugins designed to encourage good coding practices.
 analyzer:
   exclude:
+    - _backup_pre_hetzner_20260915/**
+    - _broken_backup_outside/**
     - build/**
     - android/**
     - ios/**

@@ -8,6 +8,7 @@ import '../providers/auth_provider.dart';
 import 'registration_form_screen.dart';
 import 'admin/event_songs_assignment.dart';
 import 'admin/event_song_documents.dart';
+import 'admin/organ_editor_screen.dart';
 
 class EventDetailScreen extends StatefulWidget {
   final String eventId;
@@ -22,12 +23,13 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
   Event? _event;
   List<Song> _songs = [];
   Map<String, int> _documentsCountBySong = {};
+  Map<String, int> _organSlotsCountBySong = {};
+  Map<String, int> _candidatureCountBySong = {};
   bool _isLoading = true;
   bool _isRefreshing = false;
 
   static const int SCROLL_THRESHOLD = 20;
 
-  // 🔥 RouteObserver per tracciare quando si torna allo schermo
   final RouteObserver<PageRoute> _routeObserver = RouteObserver<PageRoute>();
 
   @override
@@ -39,7 +41,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Iscriviti al RouteObserver per ricevere notifiche quando si torna allo schermo
     final route = ModalRoute.of(context);
     if (route is PageRoute) {
       _routeObserver.subscribe(this, route);
@@ -52,19 +53,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
     super.dispose();
   }
 
-  // 🔥 METODO CHIAMATO QUANDO SI TORNA ALLO SCHERMO
   @override
   void didPopNext() {
-    // Questo metodo viene chiamato quando si torna a questo schermo
-    // dopo averne aperto un altro
     super.didPopNext();
     print('🔄 Rientrato in EventDetailScreen - Ricarico dati...');
     _refreshData();
   }
 
-  // 🔥 METODO PER FORZARE IL REFRESH
   Future<void> _refreshData() async {
-    // Se non siamo nella vista attiva, non fare nulla
     if (!mounted) return;
     if (_isRefreshing) return;
 
@@ -85,12 +81,16 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
       final event = await _db.getEventById(widget.eventId);
       final songs = await _db.getSongsByEvent(widget.eventId);
       final counts = await _db.getEventSongDocumentsCountForEvent(widget.eventId);
+      final organCounts = await _db.getOrganSlotsCountByEvent(widget.eventId);
+      final candCounts = await _db.getRegistrationsCountBySongForEvent(widget.eventId);
 
       if (mounted) {
         setState(() {
           _event = event;
           _songs = songs;
           _documentsCountBySong = counts;
+          _organSlotsCountBySong = organCounts;
+          _candidatureCountBySong = candCounts;
           _isLoading = false;
         });
       }
@@ -98,6 +98,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
       print('✅ Evento caricato: ${event?.title}');
       print('✅ Canzoni trovate: ${songs.length}');
       print('✅ Conteggio documenti: $counts');
+      print('✅ Conteggio organico: $organCounts');
+      print('✅ Conteggio candidature: $candCounts');
     } catch (e, stackTrace) {
       print('❌ ERRORE in _loadData: $e');
       print('📚 STACK: $stackTrace');
@@ -128,7 +130,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
         return;
       }
 
-      // 🔥 Usa push per permettere il refresh al ritorno
       final result = await Navigator.push(
         context,
         MaterialPageRoute(
@@ -141,7 +142,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
         ),
       );
 
-      // 🔥 Se i documenti sono stati modificati, ricarica i dati
       if (result == true && mounted) {
         await _refreshData();
       }
@@ -157,9 +157,56 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
     }
   }
 
-  // 🔥 METODO PER GESTIRE LA SCALETTA CON REFRESH
+  Future<void> _openOrganEditor(Song song) async {
+    try {
+      final eventSongId = await _db.getEventSongId(widget.eventId, song.id);
+      if (eventSongId == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Errore: relazione evento-brano non trovata'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => OrganEditorScreen(
+            eventSongId: eventSongId,
+            songTitle: song.title,
+            eventTitle: _event!.title,
+          ),
+        ),
+      );
+
+      await _refreshData();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _openCandidature(Song song) async {
+    // TODO: implementare F5 (gestione candidature)
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🎼 Gestione candidature in arrivo'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   void _navigateToSongsAssignment() async {
-    // 🔥 Usa push per permettere il refresh al ritorno
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
@@ -169,7 +216,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
       ),
     );
 
-    // 🔥 Se la scaletta è stata modificata, ricarica i dati
     if (result == true && mounted) {
       await _refreshData();
     }
@@ -246,7 +292,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                 children: [
                   _buildAppBar(isAdmin, context),
 
-                  // Info evento - in alto
                   Expanded(
                     flex: 2,
                     child: Padding(
@@ -370,18 +415,13 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // 🔥 INTESTAZIONE SCALETTA CON BOTTONI
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                           child: Row(
                             children: [
-                              // 🔥 BOTTONE GESTISCI SCALETTA (solo admin) - con conteggio brani
                               if (isAdmin)
                                 ElevatedButton.icon(
-                                  icon: const Icon(
-                                    Icons.playlist_add,
-                                    size: 14,
-                                  ),
+                                  icon: const Icon(Icons.playlist_add, size: 14),
                                   label: Text(
                                     'Gestisci Scaletta (${_songs.length})',
                                     style: const TextStyle(fontSize: 11),
@@ -400,13 +440,9 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                                   ),
                                 ),
                               const SizedBox(width: 8),
-                              // 🔥 BOTTONE GESTISCI DOCUMENTI (solo admin)
                               if (isAdmin)
                                 ElevatedButton.icon(
-                                  icon: const Icon(
-                                    Icons.folder,
-                                    size: 14,
-                                  ),
+                                  icon: const Icon(Icons.folder, size: 14),
                                   label: const Text(
                                     'Gestisci Documenti',
                                     style: TextStyle(fontSize: 11),
@@ -429,7 +465,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                           ),
                         ),
 
-                        // ✅ LISTA BRANI COMPATTA
+                        // ✅ LISTA BRANI IN 2 COLONNE
                         if (_songs.isEmpty)
                           Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -456,55 +492,122 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                                   : const NeverScrollableScrollPhysics(),
                               child: Wrap(
                                 spacing: 6,
-                                runSpacing: 0,
+                                runSpacing: 1,
                                 children: _songs.asMap().entries.map((entry) {
                                   final index = entry.key;
                                   final song = entry.value;
                                   final docCount = _documentsCountBySong[song.id] ?? 0;
+                                  final organCount = _organSlotsCountBySong[song.id] ?? 0;
+                                  final candCount = _candidatureCountBySong[song.id] ?? 0;
+
                                   return SizedBox(
                                     width: (MediaQuery.of(context).size.width - 36) / 2,
                                     height: 24,
                                     child: Row(
                                       children: [
-                                        // 🔥 BOTTONE DOCUMENTI PER SINGOLO BRANO (admin) - primo elemento, icona gialla
+                                        // 📁 Documenti
                                         if (isAdmin)
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.folder_open,
-                                              color: Colors.amber,
-                                              size: 14,
+                                          GestureDetector(
+                                            onTap: () => _navigateToDocuments(song),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(
+                                                  Icons.folder_open,
+                                                  color: Colors.amber,
+                                                  size: 12,
+                                                ),
+                                                if (docCount > 0) ...[
+                                                  const SizedBox(width: 1),
+                                                  Text(
+                                                    '$docCount',
+                                                    style: TextStyle(
+                                                      color: Colors.amber.withOpacity(0.85),
+                                                      fontSize: 9,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
                                             ),
-                                            onPressed: () => _navigateToDocuments(song),
-                                            tooltip: 'Documenti del brano',
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
                                           ),
+                                        const SizedBox(width: 4),
+
+                                        // 🎼 Organico
+                                        if (isAdmin)
+                                          GestureDetector(
+                                            onTap: () => _openOrganEditor(song),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  Icons.queue_music,
+                                                  size: 12,
+                                                  color: organCount > 0
+                                                      ? Colors.deepPurple.shade200
+                                                      : Colors.white.withOpacity(0.3),
+                                                ),
+                                                const SizedBox(width: 1),
+                                                Text(
+                                                  '$organCount',
+                                                  style: TextStyle(
+                                                    color: organCount > 0
+                                                        ? Colors.deepPurple.shade200
+                                                        : Colors.white.withOpacity(0.3),
+                                                    fontSize: 9,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        const SizedBox(width: 4),
+
+                                        // 👥 Candidature
+                                        if (isAdmin)
+                                          GestureDetector(
+                                            onTap: () => _openCandidature(song),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  Icons.people,
+                                                  size: 12,
+                                                  color: candCount > 0
+                                                      ? Colors.green.shade200
+                                                      : Colors.white.withOpacity(0.3),
+                                                ),
+                                                const SizedBox(width: 1),
+                                                Text(
+                                                  '$candCount',
+                                                  style: TextStyle(
+                                                    color: candCount > 0
+                                                        ? Colors.green.shade200
+                                                        : Colors.white.withOpacity(0.3),
+                                                    fontSize: 9,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        const SizedBox(width: 6),
+
+                                        // Numero d'ordine
                                         SizedBox(
-                                          width: 16,
+                                          width: 12,
                                           child: Text(
                                             '${index + 1}',
                                             style: TextStyle(
-                                              color: Colors.white.withOpacity(0.25),
+                                              color: Colors.white.withOpacity(0.3),
                                               fontSize: 9,
                                               fontWeight: FontWeight.bold,
                                             ),
                                           ),
                                         ),
-                                        // 🔥 CONTATORE DOCUMENTI SPECIFICI DI QUESTO EVENTO
-                                        if (docCount > 0)
-                                          Padding(
-                                            padding: const EdgeInsets.only(left: 4),
-                                            child: Text(
-                                              '($docCount)',
-                                              style: TextStyle(
-                                                color: Colors.amber.withOpacity(0.8),
-                                                fontSize: 9,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ),
-                                        const SizedBox(width: 4),
+                                        const SizedBox(width: 2),
 
+                                        // Titolo
                                         Expanded(
                                           child: Text(
                                             song.title,
@@ -517,7 +620,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
                                             overflow: TextOverflow.ellipsis,
                                           ),
                                         ),
-
                                       ],
                                     ),
                                   );
@@ -612,7 +714,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
             tooltip: 'Torna indietro',
           ),
           const Spacer(),
-          // 🔥 BOTTONE REFRESH
           IconButton(
             icon: const Icon(
               Icons.refresh,
@@ -636,7 +737,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with RouteAware {
     );
   }
 
-  // ✅ Dialog per selezionare il brano e andare ai documenti
   void _showSongSelectionDialog() {
     if (_songs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(

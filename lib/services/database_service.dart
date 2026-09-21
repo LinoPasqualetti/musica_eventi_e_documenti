@@ -22,7 +22,10 @@ import '../models/registration_model.dart';
 import '../models/musical_document.dart';
 import '../models/user_model.dart';
 //import '../models/event_song.dart'; // RIMOSSO - ora in event_model.dart
+import '../models/organ.dart';          // 👈 NUOVO
+import '../models/organ_slot.dart';    // 👈 NUOVO
 import 'database_migration.dart';
+import '../models/registration_with_user.dart';
 
 // 🔥 IMPORT DEL LOGGER
 import '../utils/performance_logger.dart';
@@ -34,7 +37,7 @@ class DatabaseService {
   static bool _forceCopyFromAsset = false;
 
   // Versione del database - AUMENTATA A 4 PER LA SYNC REGISTRAZIONI
-  static const int DB_VERSION = 4;
+  static const int DB_VERSION = 7;
 
   DatabaseService() {
     _initDatabaseFactory();
@@ -61,9 +64,14 @@ class DatabaseService {
     _initialized = true;
   }
 
+  // Lock per evitare init parallele
+  static Future<Database>? _initFuture;
+
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDatabase();
+    // Se una init è già in corso, aspetta la stessa Future
+    _initFuture ??= _initDatabase();
+    _database = await _initFuture!;
     return _database!;
   }
 
@@ -298,7 +306,17 @@ class DatabaseService {
       // (per la sincronizzazione delle iscrizioni col backend web)
       await DatabaseMigration.runRegistrationsSyncMigration(db);
     }
-
+    if (oldVersion < 5) {
+      // Aggiunge tabelle organs e organ_slots (organico dei brani)
+      await DatabaseMigration.runOrgansMigration(db);
+    }
+    if (oldVersion < 6) {
+      // Aggiunge colonne organico a registrations (song_id, organ_slot_id, ...)
+      await DatabaseMigration.runRegistrationsOrgansMigration(db);
+    }
+    if (oldVersion < 7) {
+      await DatabaseMigration.runRegistrationsCandidatesMigration(db);
+    }
     PerformanceLogger.stop('_onUpgrade');
   }
 
@@ -2303,6 +2321,396 @@ class DatabaseService {
     } catch (e) {
       PerformanceLogger.error('updateUserLastLogin fallito', error: e);
       rethrow;
+    }
+  }
+  // ═══════════════════════════════════════════════════════════════
+  // METODI ORGANICI (organs + organ_slots)
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Ritorna tutti gli organici non cancellati di un brano.
+  Future<List<Organ>> getOrgansByEventSong(String eventSongId) async {
+    PerformanceLogger.start('getOrgansByEventSong');
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'organs',
+        where: 'event_song_id = ? AND deleted_at IS NULL',
+        whereArgs: [eventSongId],
+        orderBy: 'created_at ASC',
+      );
+      final result = rows.map((m) => Organ.fromMap(m)).toList();
+      PerformanceLogger.info('Organici per event-song', details: '${result.length}');
+      PerformanceLogger.stop('getOrgansByEventSong');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getOrgansByEventSong fallito', error: e);
+      return [];
+    }
+  }
+  /// Ritorna la lista di strumenti distinti già usati negli organici
+  /// (per l'autocomplete nel modale slot).
+  Future<List<String>> getKnownInstruments() async {
+    try {
+      final db = await database;
+      final rows = await db.rawQuery('''
+      SELECT DISTINCT instrument
+      FROM organ_slots
+      WHERE deleted_at IS NULL
+      ORDER BY instrument ASC
+    ''');
+      final fromDb = rows.map((r) => r['instrument'] as String).toList();
+
+      // Lista hardcoded di base, sempre presente
+      const defaults = [
+        'Basso elettrico',
+        'Basso acustico',
+        'Contrabbasso',
+        'Batteria',
+        'Percussioni',
+        'Pianoforte',
+        'Tastiere',
+        'Chitarra',
+        'Voce',
+        'Sax contralto',
+        'Sax tenore',
+        'Sax baritono',
+        'Tromba in Bb',
+        'Trombone',
+        'Flauto',
+        'Violini I',
+        'Violini II',
+        'Viole',
+        'Violoncelli',
+        'Contrabbassi',
+      ];
+
+      // Unione senza duplicati, ordinata
+      final all = {...defaults, ...fromDb}.toList()..sort();
+      return all;
+    } catch (e) {
+      print('❌ getKnownInstruments fallito: $e');
+      return [];
+    }
+  }
+  /// Ritorna un organico per id, con i suoi slot caricati.
+  /// Ritorna null se non esiste o è cancellato.
+  Future<Organ?> getOrganById(String organId) async {
+    PerformanceLogger.start('getOrganById');
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'organs',
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [organId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        PerformanceLogger.stop('getOrganById');
+        return null;
+      }
+      PerformanceLogger.stop('getOrganById');
+      return Organ.fromMap(rows.first);
+    } catch (e) {
+      PerformanceLogger.error('getOrganById fallito', error: e);
+      return null;
+    }
+  }
+
+  /// Ritorna tutti gli slot non cancellati di un organico,
+  /// ordinati per sezione (ritmica→armonica→solistica→orchestrale) e order_index.
+  Future<List<OrganSlot>> getSlotsByOrgan(String organId) async {
+    PerformanceLogger.start('getSlotsByOrgan');
+    try {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT * FROM organ_slots
+        WHERE organ_id = ? AND deleted_at IS NULL
+        ORDER BY
+          CASE section
+            WHEN 'ritmica' THEN 1
+            WHEN 'armonica' THEN 2
+            WHEN 'solistica' THEN 3
+            WHEN 'orchestrale' THEN 4
+            ELSE 5
+          END ASC,
+          order_index ASC
+      ''', [organId]);
+      final result = rows.map((m) => OrganSlot.fromMap(m)).toList();
+      PerformanceLogger.info('Slot per organico', details: '${result.length}');
+      PerformanceLogger.stop('getSlotsByOrgan');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getSlotsByOrgan fallito', error: e);
+      return [];
+    }
+  }
+
+  /// Inserisce un nuovo organico. Ritorna true se inserito.
+  Future<bool> insertOrgan(Organ organ) async {
+    PerformanceLogger.start('insertOrgan');
+    try {
+      final db = await database;
+      await db.insert(
+        'organs',
+        organ.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      PerformanceLogger.info('Organico inserito', details: organ.id);
+      PerformanceLogger.stop('insertOrgan');
+      return true;
+    } catch (e) {
+      PerformanceLogger.error('insertOrgan fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Aggiorna un organico esistente.
+  Future<void> updateOrgan(Organ organ) async {
+    PerformanceLogger.start('updateOrgan');
+    try {
+      final db = await database;
+      await db.update(
+        'organs',
+        organ.toMap(),
+        where: 'id = ?',
+        whereArgs: [organ.id],
+      );
+      PerformanceLogger.stop('updateOrgan');
+    } catch (e) {
+      PerformanceLogger.error('updateOrgan fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Soft delete di un organico (imposta deleted_at).
+  /// Anche i suoi slot vengono soft-deleted.
+  Future<void> deleteOrgan(String organId) async {
+    PerformanceLogger.start('deleteOrgan');
+    try {
+      final db = await database;
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.transaction((txn) async {
+        await txn.update(
+          'organs',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'id = ?',
+          whereArgs: [organId],
+        );
+        await txn.update(
+          'organ_slots',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'organ_id = ? AND deleted_at IS NULL',
+          whereArgs: [organId],
+        );
+      });
+      PerformanceLogger.stop('deleteOrgan');
+    } catch (e) {
+      PerformanceLogger.error('deleteOrgan fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Inserisce un nuovo slot.
+  Future<bool> insertOrganSlot(OrganSlot slot) async {
+    PerformanceLogger.start('insertOrganSlot');
+    try {
+      final db = await database;
+      await db.insert(
+        'organ_slots',
+        slot.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      PerformanceLogger.info('Slot inserito', details: slot.id);
+      PerformanceLogger.stop('insertOrganSlot');
+      return true;
+    } catch (e) {
+      PerformanceLogger.error('insertOrganSlot fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Aggiorna uno slot esistente.
+  Future<void> updateOrganSlot(OrganSlot slot) async {
+    PerformanceLogger.start('updateOrganSlot');
+    try {
+      final db = await database;
+      await db.update(
+        'organ_slots',
+        slot.toMap(),
+        where: 'id = ?',
+        whereArgs: [slot.id],
+      );
+      PerformanceLogger.stop('updateOrganSlot');
+    } catch (e) {
+      PerformanceLogger.error('updateOrganSlot fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Soft delete di uno slot.
+  Future<void> deleteOrganSlot(String slotId) async {
+    PerformanceLogger.start('deleteOrganSlot');
+    try {
+      final db = await database;
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.update(
+        'organ_slots',
+        {'deleted_at': now, 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: [slotId],
+      );
+      PerformanceLogger.stop('deleteOrganSlot');
+    } catch (e) {
+      PerformanceLogger.error('deleteOrganSlot fallito', error: e);
+      rethrow;
+    }
+  }
+
+  /// Utility: genera un id univoco con prefisso.
+  String generateOrganId() =>
+      'org_${DateTime.now().millisecondsSinceEpoch}_${_randomSuffix()}';
+  String generateSlotId() =>
+      'slot_${DateTime.now().millisecondsSinceEpoch}_${_randomSuffix()}';
+
+  String _randomSuffix() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final rand = DateTime.now().microsecondsSinceEpoch;
+    final buf = StringBuffer();
+    for (var i = 0; i < 6; i++) {
+      buf.write(chars[(rand + i * 7) % chars.length]);
+    }
+    return buf.toString();
+  }
+  /// Conta gli slot di organico per ogni brano-in-evento dell'evento specificato.
+  /// Ritorna una mappa songId -> numero di slot (non cancellati).
+  /// Include anche i brani con 0 slot (per uniformità con _documentsCount).
+  Future<Map<String, int>> getOrganSlotsCountByEvent(String eventId) async {
+    PerformanceLogger.start('getOrganSlotsCountByEvent');
+    try {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT es.song_id AS song_id, COUNT(os.id) AS count
+        FROM event_songs es
+        LEFT JOIN organs o ON o.event_song_id = es.id AND o.deleted_at IS NULL
+        LEFT JOIN organ_slots os ON os.organ_id = o.id AND os.deleted_at IS NULL
+        WHERE es.event_id = ?
+        GROUP BY es.song_id
+      ''', [eventId]);
+
+      final result = <String, int>{};
+      for (final r in rows) {
+        final songId = r['song_id'] as String?;
+        final count = (r['count'] as int?) ?? 0;
+        if (songId != null) result[songId] = count;
+      }
+      PerformanceLogger.info('Conteggio slot organico per evento',
+          details: '${result.length} brani');
+      PerformanceLogger.stop('getOrganSlotsCountByEvent');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getOrganSlotsCountByEvent fallito', error: e);
+      return {};
+    }
+  }
+  /// Ritorna tutte le candidature non cancellate di un event-song,
+  /// arricchite con nome/email dell'utente candidato.
+  Future<List<RegistrationWithUser>> getRegistrationsWithUserByEventSong(
+      String eventSongId) async {
+    PerformanceLogger.start('getRegistrationsWithUserByEventSong');
+    try {
+      final db = await database;
+
+      // 1. Trova song_id da event_song_id
+      final esRows = await db.query(
+        'event_songs',
+        columns: ['song_id'],
+        where: 'id = ?',
+        whereArgs: [eventSongId],
+        limit: 1,
+      );
+      if (esRows.isEmpty) {
+        PerformanceLogger.info('EventSong non trovato', details: eventSongId);
+        PerformanceLogger.stop('getRegistrationsWithUserByEventSong');
+        return [];
+      }
+      final songId = esRows.first['song_id'] as String;
+
+      // 2. Leggi candidature con LEFT JOIN su users
+      final rows = await db.rawQuery('''
+        SELECT
+          r.*,
+          u.full_name AS user_full_name,
+          u.email     AS user_email
+        FROM registrations r
+        LEFT JOIN users u ON u.id = r.user_id
+        WHERE r.song_id = ?
+          AND r.deleted_at IS NULL
+        ORDER BY
+          CASE r.status
+            WHEN 'pending'   THEN 1
+            WHEN 'waitlist'  THEN 2
+            WHEN 'confirmed' THEN 3
+            WHEN 'rejected'  THEN 4
+            ELSE 5
+          END ASC,
+          r.created_at ASC
+      ''', [songId]);
+
+      final result = rows.map((m) => RegistrationWithUser.fromMap(m)).toList();
+      PerformanceLogger.info('Candidature per event-song',
+          details: '${result.length}');
+      PerformanceLogger.stop('getRegistrationsWithUserByEventSong');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getRegistrationsWithUserByEventSong fallito',
+          error: e);
+      return [];
+    }
+
+  }
+  /// Ritorna tutte le candidature non cancellate di un evento,
+  /// arricchite con nome/email dell'utente candidato.
+  /// Filtra per song_id (non event_id): il campo song_id è collegato
+  /// alla tabella registrations, non l'event_song_id.
+  Future<List<RegistrationWithUser>> getRegistrationsWithUserByEvent(
+      String eventId) async {
+    PerformanceLogger.start('getRegistrationsWithUserByEvent');
+    try {
+      final db = await database;
+
+      // Le candidature NON hanno event_id popolato nel nuovo schema,
+      // ma hanno song_id. Filtriamo per gli song_id presenti nell'evento.
+      final rows = await db.rawQuery('''
+        SELECT
+          r.*,
+          u.full_name AS user_full_name,
+          u.email     AS user_email
+        FROM registrations r
+        LEFT JOIN users u ON u.id = r.user_id
+        WHERE r.song_id IN (
+          SELECT es.song_id FROM event_songs es WHERE es.event_id = ?
+        )
+        AND r.deleted_at IS NULL
+        ORDER BY
+          CASE r.status
+            WHEN 'pending'   THEN 1
+            WHEN 'waitlist'  THEN 2
+            WHEN 'confirmed' THEN 3
+            WHEN 'rejected'  THEN 4
+            ELSE 5
+          END ASC,
+          r.created_at ASC
+      ''', [eventId]);
+
+      final result = rows.map((m) => RegistrationWithUser.fromMap(m)).toList();
+      PerformanceLogger.info('Candidature per evento',
+          details: '${result.length}');
+      PerformanceLogger.stop('getRegistrationsWithUserByEvent');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getRegistrationsWithUserByEvent fallito',
+          error: e);
+      return [];
     }
   }
 }

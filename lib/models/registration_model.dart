@@ -15,6 +15,16 @@ class Registration {
   final String createdAt;
   final String? updatedAt;
 
+  // ─── Campi organico ─────────────────────────────────────────────
+  final String? songId;
+  final String? organSlotId;
+  final String? timeDescription;
+  final String? deletedAt;
+
+  // ─── Campi candidato (per conto terzi) ──────────────────────────
+  final String? candidateName;
+  final String? candidateEmail;
+
   // Campi per compatibilità con il vecchio codice
   String? get fullName => null;
   String? get email => null;
@@ -37,6 +47,14 @@ class Registration {
     this.cancelledAt,
     required this.createdAt,
     this.updatedAt,
+    // organico
+    this.songId,
+    this.organSlotId,
+    this.timeDescription,
+    this.deletedAt,
+    // candidato
+    this.candidateName,
+    this.candidateEmail,
   });
 
   Map<String, dynamic> toMap() {
@@ -55,6 +73,14 @@ class Registration {
       'cancelled_at': cancelledAt,
       'created_at': createdAt,
       'updated_at': updatedAt,
+      // organico
+      'song_id': songId,
+      'organ_slot_id': organSlotId,
+      'time_description': timeDescription,
+      'deleted_at': deletedAt,
+      // candidato
+      'candidate_name': candidateName,
+      'candidate_email': candidateEmail,
     };
   }
 
@@ -74,12 +100,26 @@ class Registration {
       cancelledAt: map['cancelled_at'] as String?,
       createdAt: map['created_at'] as String,
       updatedAt: map['updated_at'] as String?,
+      // organico
+      songId: map['song_id'] as String?,
+      organSlotId: map['organ_slot_id'] as String?,
+      timeDescription: map['time_description'] as String?,
+      deletedAt: map['deleted_at'] as String?,
+      // candidato
+      candidateName: map['candidate_name'] as String?,
+      candidateEmail: map['candidate_email'] as String?,
     );
   }
 
   Registration copyWith({
     String? status,
     String? adminNotes,
+    String? songId,
+    String? organSlotId,
+    String? timeDescription,
+    String? deletedAt,
+    String? candidateName,
+    String? candidateEmail,
   }) {
     return Registration(
       id: id,
@@ -96,6 +136,12 @@ class Registration {
       cancelledAt: cancelledAt,
       createdAt: createdAt,
       updatedAt: DateTime.now().toIso8601String(),
+      songId: songId ?? this.songId,
+      organSlotId: organSlotId ?? this.organSlotId,
+      timeDescription: timeDescription ?? this.timeDescription,
+      deletedAt: deletedAt ?? this.deletedAt,
+      candidateName: candidateName ?? this.candidateName,
+      candidateEmail: candidateEmail ?? this.candidateEmail,
     );
   }
 }

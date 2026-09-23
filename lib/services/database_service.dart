@@ -2713,4 +2713,125 @@ class DatabaseService {
       return [];
     }
   }
+  // ═══════════════════════════════════════════════════════════════
+  // METODI SYNC v2 (pull/ack con timestamp)
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Ritorna l'ultimo timestamp di pull salvato (o null se mai).
+  Future<String?> getLastPullTimestamp() async {
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'sync_log',
+        columns: ['ts'],
+        where: "direction = 'pull' AND action = 'completed'",
+        orderBy: 'ts DESC',
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      return rows.first['ts'] as String?;
+    } catch (e) {
+      print('❌ getLastPullTimestamp fallito: $e');
+      return null;
+    }
+  }
+
+  /// Registra il completamento di un pull.
+  Future<void> setLastPullTimestamp(String timestamp) async {
+    try {
+      final db = await database;
+      await db.insert('sync_log', {
+        'ts': timestamp,
+        'direction': 'pull',
+        'action': 'completed',
+        'entity': 'registrations',
+        'entity_id': null,
+        'detail': null,
+      });
+    } catch (e) {
+      print('❌ setLastPullTimestamp fallito: $e');
+    }
+  }
+
+  /// Applica un batch di candidature ricevute dal Web.
+  /// - INSERT se nuove (per remote_id)
+  /// - UPDATE solo se remote è più recente (last-write-wins su updated_at)
+  /// Ritorna il numero di record nuovi inseriti.
+  Future<int> applyPullFromServer(List<Map<String, dynamic>> remoteRegs) async {
+    PerformanceLogger.start('applyPullFromServer');
+    int inserted = 0;
+    try {
+      final db = await database;
+
+      for (final json in remoteRegs) {
+        final remoteId = json['id'] as String;
+        final remoteUpdated = json['updated_at'] as String?;
+
+        // Cerca per id (che è lo stesso id del Web)
+        final existing = await db.query(
+          'registrations',
+          where: 'id = ?',
+          whereArgs: [remoteId],
+          limit: 1,
+        );
+
+        final values = <String, dynamic>{
+          'id': remoteId,
+          'event_id': json['event_id'],
+          'user_id': json['user_id'],
+          'song_id': json['song_id'],
+          'organ_slot_id': json['organ_slot_id'],
+          'candidate_name': json['candidate_name'],
+          'candidate_email': json['candidate_email'],
+          'time_description': json['time_description'],
+          'status': json['status'],
+          'notes': json['notes'],
+          'admin_notes': json['admin_notes'],
+          'confirmed_at': json['confirmed_at'],
+          'cancelled_at': json['cancelled_at'],
+          'created_at': json['created_at'],
+          'updated_at': remoteUpdated,
+          'deleted_at': json['deleted_at'],
+          'sync_state': 'clean',
+          'last_pulled_at': DateTime.now().toUtc().toIso8601String(),
+          'remote_updated_at': remoteUpdated,
+        };
+
+        if (existing.isEmpty) {
+          await db.insert(
+            'registrations',
+            values,
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+          inserted++;
+        } else {
+          // Last-write-wins: aggiorna solo se remoto più recente
+          final localUpdated = existing.first['updated_at'] as String?;
+          final localDt = localUpdated != null
+              ? DateTime.tryParse(localUpdated) ?? DateTime(1970)
+              : DateTime(1970);
+          final remoteDt = remoteUpdated != null
+              ? DateTime.tryParse(remoteUpdated) ?? DateTime(1970)
+              : DateTime(1970);
+
+          if (remoteDt.isAfter(localDt)) {
+            await db.update(
+              'registrations',
+              values,
+              where: 'id = ?',
+              whereArgs: [existing.first['id']],
+            );
+          }
+        }
+      }
+
+      PerformanceLogger.info('Pull applicato', details: '$inserted nuovi');
+      PerformanceLogger.stop('applyPullFromServer');
+      return inserted;
+    } catch (e) {
+      PerformanceLogger.error('applyPullFromServer fallito', error: e);
+      PerformanceLogger.stop('applyPullFromServer');
+      rethrow;
+    }
+  }
 }

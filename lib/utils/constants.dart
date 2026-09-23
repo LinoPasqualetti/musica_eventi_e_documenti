@@ -20,4 +20,8 @@ class AppConstants {
   static const String syncStateClean  = 'clean';
   static const String syncStateDirty  = 'dirty';
   static const String syncStateConflict = 'conflict';
+  /// Credenziali admin Web per auto-login silenzioso (sync).
+  /// Devono essere le stesse dell'utente admin nel DB Web.
+  static const String webAdminEmail = 'admin@musicapertutti.it';
+  static const String webAdminPassword = 'AdminPass123';
 }

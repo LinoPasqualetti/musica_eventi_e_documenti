@@ -1,6 +1,8 @@
 // lib/screens/admin/candidature_screen.dart
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../services/database_service.dart';
+import '../../providers/registration_sync_provider.dart';
 import '../../models/organ_slot.dart';
 import '../../models/registration_with_user.dart';
 
@@ -26,7 +28,7 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
   List<OrganSlot> _slots = [];
   List<RegistrationWithUser> _candidature = [];
   bool _loading = true;
-  String _filter = 'all'; // all | pending | waitlist | confirmed | rejected
+  String _filter = 'all';
 
   @override
   void initState() {
@@ -37,14 +39,12 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      // 1. Trova organico + slot per questo event_song
       final organs = await _db.getOrgansByEventSong(widget.eventSongId);
       List<OrganSlot> slots = [];
       if (organs.isNotEmpty) {
         slots = await _db.getSlotsByOrgan(organs.first.id);
       }
 
-      // 2. Carica candidature con dati utente
       final candidature =
       await _db.getRegistrationsWithUserByEventSong(widget.eventSongId);
 
@@ -66,6 +66,36 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
     }
   }
 
+  /// Esegue sync completo (pull + push) e ricarica la UI.
+  Future<void> _runSync(RegistrationSyncProvider provider) async {
+    await provider.syncAll();
+
+    if (!mounted) return;
+
+    final err = provider.lastError;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ $err'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✅ Sync: ${provider.state.lastPulled} nuove, '
+                '${provider.state.lastPushed} inviate',
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+
+    await _load();
+  }
+
   List<RegistrationWithUser> _filtered() {
     if (_filter == 'all') return _candidature;
     return _candidature
@@ -85,14 +115,12 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
 
   Future<void> _updateStatus(
       RegistrationWithUser c,
-      String newStatus, {
-        String? adminNotes,
-      }) async {
+      String newStatus,
+      ) async {
     try {
       await _db.setRegistrationStatusLocal(
         c.registration.id,
         newStatus,
-        adminNotes: adminNotes,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -114,49 +142,6 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
     }
   }
 
-  Future<void> _editTimeDescription(RegistrationWithUser c) async {
-    final controller =
-    TextEditingController(text: c.registration.timeDescription ?? '');
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Modifica intervallo temporale'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Time description',
-            border: OutlineInputBorder(),
-            hintText: 'Es. "2° movimento", "Chorus 3-5"',
-          ),
-          maxLines: 2,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Annulla'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.deepPurple,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Salva'),
-          ),
-        ],
-      ),
-    );
-    if (result == null) return;
-    // Aggiorna solo time_description: usa setRegistrationStatusLocal
-    // con lo stesso stato (così marca dirty e aggiorna updated_at)
-    await _updateStatus(
-      c,
-      c.registration.status,
-      adminNotes: null,
-    );
-  }
-
   int _countByStatus(String status) {
     return _candidature
         .where((c) => c.registration.status == status)
@@ -167,7 +152,7 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('👥 Candidature: ${widget.songTitle}'),
+        title: Text('Candidature: ${widget.songTitle}'),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
         bottom: PreferredSize(
@@ -181,10 +166,33 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
           ),
         ),
         actions: [
+          // Pulsante sync (pull + push)
+          Consumer<RegistrationSyncProvider>(
+            builder: (context, syncProvider, _) {
+              if (syncProvider.isRunning) {
+                return const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  ),
+                );
+              }
+              return IconButton(
+                icon: const Icon(Icons.cloud_sync),
+                onPressed: () => _runSync(syncProvider),
+                tooltip: 'Sincronizza col Web',
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _load,
-            tooltip: 'Aggiorna',
+            tooltip: 'Ricarica',
           ),
         ],
       ),
@@ -207,7 +215,7 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
               padding: EdgeInsets.all(24),
               child: Text(
                 'Nessun organico definito per questo brano.\n'
-                    'Definisci l\'organico in F2 prima di gestire le candidature.',
+                    'Definisci l organico in F2 prima di gestire le candidature.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey),
               ),
@@ -221,7 +229,7 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
                 if (sectionSlots.isEmpty) return <Widget>[];
 
                 return [
-                  _buildSectionHeader(section, sectionSlots),
+                  _buildSectionHeader(section),
                   ...sectionSlots.map(_buildSlotCard),
                   const SizedBox(height: 16),
                 ];
@@ -243,22 +251,21 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       color: Colors.grey.shade100,
-      child: Row(
-        children: [
-          Text(
-            'Totale: $total',
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(width: 12),
-          if (pending > 0)
-            _chip('⏳ $pending pending', Colors.orange),
-          if (waitlist > 0)
-            _chip('⏸ $waitlist waitlist', Colors.blue),
-          if (confirmed > 0)
-            _chip('✅ $confirmed confermati', Colors.green),
-          if (rejected > 0)
-            _chip('❌ $rejected rifiutati', Colors.grey),
-        ],
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            Text(
+              'Totale: $total',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 12),
+            if (pending > 0) _chip('$pending pending', Colors.orange),
+            if (waitlist > 0) _chip('$waitlist waitlist', Colors.blue),
+            if (confirmed > 0) _chip('$confirmed confermati', Colors.green),
+            if (rejected > 0) _chip('$rejected rifiutati', Colors.grey),
+          ],
+        ),
       ),
     );
   }
@@ -310,7 +317,7 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
     );
   }
 
-  Widget _buildSectionHeader(OrganSection section, List<OrganSlot> slots) {
+  Widget _buildSectionHeader(OrganSection section) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -475,13 +482,6 @@ class _CandidatureScreenState extends State<CandidatureScreen> {
                       c.registration.timeDescription!,
                       style: const TextStyle(fontSize: 12, color: Colors.grey),
                     ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.edit, size: 14),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: () => _editTimeDescription(c),
-                    tooltip: 'Modifica',
                   ),
                 ],
               ),

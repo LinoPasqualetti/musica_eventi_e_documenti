@@ -1,9 +1,8 @@
-// [MODIFICA] C:\musica_eventi_e_documenti\lib\providers\registration_sync_provider.dart
-
-// lib/providers/registration_sync_provider.dart
+﻿// lib/providers/registration_sync_provider.dart
 import 'package:flutter/foundation.dart';
 import '../services/database_service.dart';
 import '../services/web_sync_service.dart';
+import '../utils/constants.dart';
 
 /// Stato del processo di sync (per la UI).
 class RegistrationSyncState {
@@ -39,8 +38,7 @@ class RegistrationSyncState {
   }
 }
 
-/// Provider per la sincronizzazione delle iscrizioni col backend web.
-/// Usa ChangeNotifier (stile `provider` package), coerente col resto dell'app.
+/// Provider per la sincronizzazione delle candidature col backend web.
 class RegistrationSyncProvider extends ChangeNotifier {
   final WebSyncService _web;
   final DatabaseService _db;
@@ -62,68 +60,86 @@ class RegistrationSyncProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// PULL: scarica le pending dal web, le inserisce localmente,
-  /// poi notifica il web con mark-exported.
-  Future<void> pullPending() async {
+  /// Imposta il JWT admin per le chiamate.
+  void setToken(String? token) {
+    _web.setToken(token);
+  }
+  /// Assicura che ci sia un token Web valido.
+  /// Se non c'è, fa auto-login con le credenziali admin da AppConstants.
+  Future<bool> _ensureWebToken() async {
+    if (_web.hasToken()) return true;
+
+    print('🔑 Auto-login Web in corso...');
+    final ok = await _web.loginWithCredentials(
+      email: AppConstants.webAdminEmail,
+      password: AppConstants.webAdminPassword,
+    );
+    if (!ok) {
+      print('❌ Auto-login Web fallito');
+      return false;
+    }
+    return true;
+  }
+  // ═══════════════════════════════════════════════════════════════
+  // PULL
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Scarica le candidature dal Web e le applica localmente.
+  /// Poi chiama ack per marcare il Web come "sincronizzato".
+  Future<void> pull() async {
     _setState(_state.copyWith(isRunning: true, clearError: true));
-    final insertedIds = <String>[];
+    if (!await _ensureWebToken()) {
+      _setState(_state.copyWith(
+        isRunning: false,
+        lastError: 'Login Web fallito',
+      ));
+      return;
+    }
 
     try {
-      // 1. Scarica
-      final remote = await _web.fetchPending();
+      // 1. Leggi ultimo timestamp di pull
+      final since = await _db.getLastPullTimestamp();
 
-      // 2. Inserisci localmente (idempotente)
-      for (final reg in remote) {
-        final inserted = await _db.insertRegistrationIfAbsent(reg);
-        if (inserted) {
-          insertedIds.add(reg.id);
-          await _db.logSync(
-            direction: 'pull',
-            action: 'inserted',
-            entityId: reg.id,
-          );
-        } else {
-          await _db.logSync(
-            direction: 'pull',
-            action: 'skipped',
-            entityId: reg.id,
-          );
-        }
-      }
+      // 2. Chiama il Web
+      final response = await _web.pull(timestamp: since);
 
-// 3. Notifica il web per TUTTE le pending ricevute
-//    (anche quelle già presenti localmente, altrimenti restano
-//     pending sul web per sempre e vengono riproposte ad ogni pull)
-      final allRemoteIds = remote.map((r) => r.id).toList();
+      final remoteList = (response['registrations'] as List?)
+              ?.cast<Map<String, dynamic>>() ??
+          [];
+      final serverTime = response['serverTime'] as String?;
 
-      if (allRemoteIds.isNotEmpty) {
+      // 3. Applica in locale (idempotente)
+      final inserted = await _db.applyPullFromServer(remoteList);
+
+      // 4. Ack: conferma al Web di aver ricevuto
+      final ids = remoteList.map((r) => r['id'] as String).toList();
+      if (ids.isNotEmpty) {
         try {
-          await _web.markExported(allRemoteIds);
-          await _db.markRegistrationsPulled(allRemoteIds);
-          await _db.logSync(
-            direction: 'pull',
-            action: 'marked_exported',
-            detail: '${allRemoteIds.length} ids (${insertedIds.length} nuovi)',
-          );
+          await _web.ack(ids);
         } catch (e) {
           await _db.logSync(
             direction: 'pull',
             action: 'error',
-            detail: 'mark-exported fallito: $e',
+            detail: 'ack fallito: $e',
           );
-          _setState(_state.copyWith(
-            isRunning: false,
-            lastPulled: insertedIds.length,
-            lastRunAt: DateTime.now(),
-            lastError: 'Pull OK ma mark-exported fallito: $e',
-          ));
-          return;
+          // Non blocca: il prossimo pull riproverà
         }
       }
 
+      // 5. Salva timestamp
+      if (serverTime != null) {
+        await _db.setLastPullTimestamp(serverTime);
+      }
+
+      await _db.logSync(
+        direction: 'pull',
+        action: 'completed',
+        detail: '${remoteList.length} ricevuti, $inserted nuovi',
+      );
+
       _setState(_state.copyWith(
         isRunning: false,
-        lastPulled: insertedIds.length,
+        lastPulled: inserted,
         lastRunAt: DateTime.now(),
       ));
     } catch (e) {
@@ -135,47 +151,59 @@ class RegistrationSyncProvider extends ChangeNotifier {
     }
   }
 
-  /// PUSH: invia al web tutte le registrazioni modificate localmente.
-  /// Le voci che falliscono restano `dirty` e verranno ritentate.
-  Future<void> pushDirty() async {
+  // ═══════════════════════════════════════════════════════════════
+  // PUSH
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Invia al Web le candidature modificate localmente (sync_state='dirty').
+  Future<void> push() async {
     _setState(_state.copyWith(isRunning: true, clearError: true));
-    int pushed = 0;
+    if (!await _ensureWebToken()) {
+      _setState(_state.copyWith(
+        isRunning: false,
+        lastError: 'Login Web fallito',
+      ));
+      return;
+    }
 
     try {
       final dirty = await _db.getDirtyRegistrations();
+      if (dirty.isEmpty) {
+        _setState(_state.copyWith(
+          isRunning: false,
+          lastPushed: 0,
+          lastRunAt: DateTime.now(),
+        ));
+        return;
+      }
 
-      for (final reg in dirty) {
-        try {
-          await _web.pushStatus(
-            reg.id,
-            reg.status,
-            adminNotes: reg.adminNotes,
-          );
-          await _db.markRegistrationClean(reg.id);
-          await _db.logSync(
-            direction: 'push',
-            action: 'status_pushed',
-            entityId: reg.id,
-            detail: reg.status,
-          );
-          pushed++;
-        } catch (e) {
-          await _db.logSync(
-            direction: 'push',
-            action: 'error',
-            entityId: reg.id,
-            detail: '$e',
-          );
-          // resta dirty, verrà ritentato
+      final response = await _web.push(dirty);
+      final updated = (response['updated'] as int?) ?? 0;
+
+      // Marca come clean tutti quelli che il server ha confermato
+      final results = (response['results'] as List?)?.cast<Map>() ?? [];
+      for (final r in results) {
+        final id = r['id'] as String?;
+        final status = r['status'] as String?;
+        if (id == null) continue;
+        if (status == 'updated' || status == 'skipped') {
+          await _db.markRegistrationClean(id);
         }
       }
 
+      await _db.logSync(
+        direction: 'push',
+        action: 'completed',
+        detail: '$updated aggiornati su ${dirty.length}',
+      );
+
       _setState(_state.copyWith(
         isRunning: false,
-        lastPushed: pushed,
+        lastPushed: updated,
         lastRunAt: DateTime.now(),
       ));
     } catch (e) {
+      await _db.logSync(direction: 'push', action: 'error', detail: '$e');
       _setState(_state.copyWith(
         isRunning: false,
         lastError: 'Push fallito: $e',
@@ -183,7 +211,26 @@ class RegistrationSyncProvider extends ChangeNotifier {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // SYNC ALL (pull + push)
+  // ═══════════════════════════════════════════════════════════════
+
+  Future<void> syncAll() async {
+    await push();
+    await pull();
+  }
+
   void clearError() {
     _setState(_state.copyWith(clearError: true));
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ALIAS per compatibilità con admin_registrations.dart
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Alias di pull() — usato da admin_registrations.dart
+  Future<void> pullPending() => pull();
+
+  /// Alias di push() — usato da admin_registrations.dart
+  Future<void> pushDirty() => push();
 }

@@ -1,100 +1,172 @@
-// [NUOVO] C:\musica_eventi_e_documenti\lib\services\web_sync_service.dart
-
-// lib/services/web_sync_service.dart
+﻿// lib/services/web_sync_service.dart
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/registration_model.dart';
 import '../utils/constants.dart';
 
-/// Client HTTP verso il backend web su Fly.io.
-/// Incapsula le 3 chiamate necessarie al ciclo di sync delle iscrizioni:
-///   - GET  /api/registrations?status=pending      (pull)
-///   - POST /api/registrations/mark-exported       (notifica post-insert)
-///   - PUT  /api/registrations/:id/status          (push dello status finale)
+/// Client HTTP verso il backend web per la sync delle candidature.
+///
+/// Endpoint usati:
+///   - GET  /api/registrations/since?timestamp=...   (pull)
+///   - POST /api/registrations/ack                   (conferma ricezione)
+///   - POST /api/registrations/push                  (invio modifiche)
+///
+/// Tutti richiedono JWT admin nell'header `Authorization: Bearer ...`.
 class WebSyncService {
   final http.Client _client;
   final String _baseUrl;
+  String? _token;
 
-  WebSyncService({http.Client? client, String? baseUrl})
+  WebSyncService({http.Client? client, String? baseUrl, String? token})
       : _client = client ?? http.Client(),
-        _baseUrl = baseUrl ?? AppConstants.webApiBaseUrl;
+        _baseUrl = baseUrl ?? AppConstants.webApiBaseUrl,
+        _token = token;
 
-  /// GET /api/registrations?status=pending
-  /// Ritorna la lista di Registration pronte da importare.
-  /// Il controller web risponde con un array JSON puro.
-  Future<List<Registration>> fetchPending() async {
-    final uri = Uri.parse('$_baseUrl/api/registrations?status=pending');
-    final res = await _client.get(uri).timeout(AppConstants.syncHttpTimeout);
-
-    if (res.statusCode != 200) {
-      throw Exception(
-        'GET pending fallito: ${res.statusCode} ${res.body}',
-      );
-    }
-
-    final decoded = jsonDecode(res.body);
-    if (decoded is! List) {
-      throw Exception(
-        'Risposta inattesa da GET pending: atteso List, ricevuto ${decoded.runtimeType}',
-      );
-    }
-
-    return decoded
-        .cast<Map<String, dynamic>>()
-        .map((json) => Registration.fromMap(json))
-        .toList();
+  /// Imposta il token JWT admin (chiamato dal provider prima di ogni sync).
+  void setToken(String? token) {
+    _token = token;
   }
 
-  /// POST /api/registrations/mark-exported
-  /// Body: { "ids": [...] }
-  /// Idempotente lato web: aggiorna solo le registrazioni con status 'pending'.
-  Future<void> markExported(List<String> ids) async {
-    if (ids.isEmpty) return;
+  String? get token => _token;
 
-    final uri = Uri.parse('$_baseUrl/api/registrations/mark-exported');
+  Map<String, String> _headers() {
+    final h = <String, String>{
+      'Content-Type': 'application/json',
+    };
+    if (_token != null && _token!.isNotEmpty) {
+      h['Authorization'] = 'Bearer $_token';
+    }
+    return h;
+  }
+
+  // ============================================
+  // PULL
+  // ============================================
+
+  /// GET /api/registrations/since?timestamp=<ISO8601>
+  /// Ritorna la lista di candidature modificate dopo <timestamp>.
+  Future<Map<String, dynamic>> pull({String? timestamp}) async {
+    final qs = timestamp != null && timestamp.isNotEmpty
+        ? '?timestamp=${Uri.encodeQueryComponent(timestamp)}'
+        : '';
+    final uri = Uri.parse('$_baseUrl/api/registrations/since$qs');
+
+    final res = await _client
+        .get(uri, headers: _headers())
+        .timeout(AppConstants.syncHttpTimeout);
+
+    if (res.statusCode != 200) {
+      throw Exception('Pull fallito: ${res.statusCode} ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return data;
+  }
+
+  // ============================================
+  // ACK
+  // ============================================
+
+  /// POST /api/registrations/ack
+  /// Body: { "ids": [...] }
+  /// Il Web marca `synced_to_flutter_at = now` per gli id indicati.
+  Future<int> ack(List<String> ids) async {
+    if (ids.isEmpty) return 0;
+
+    final uri = Uri.parse('$_baseUrl/api/registrations/ack');
     final res = await _client
         .post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'ids': ids}),
-    )
+          uri,
+          headers: _headers(),
+          body: jsonEncode({'ids': ids}),
+        )
         .timeout(AppConstants.syncHttpTimeout);
 
     if (res.statusCode != 200) {
-      throw Exception(
-        'mark-exported fallito: ${res.statusCode} ${res.body}',
-      );
+      throw Exception('Ack fallito: ${res.statusCode} ${res.body}');
     }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return (data['acknowledged'] as int?) ?? 0;
   }
 
-  /// PUT /api/registrations/:id/status
-  /// Body: { "status": "validated" | "rejected" | ..., "admin_notes"?: "..." }
-  Future<void> pushStatus(
-      String id,
-      String status, {
-        String? adminNotes,
-      }) async {
-    final uri = Uri.parse('$_baseUrl/api/registrations/$id/status');
-    final body = <String, dynamic>{'status': status};
-    if (adminNotes != null) body['admin_notes'] = adminNotes;
+  // ============================================
+  // PUSH
+  // ============================================
 
+  /// POST /api/registrations/push
+  /// Body: { registrations: [{ id, status, time_description, admin_notes, updated_at, deleted_at }] }
+  /// Ritorna il numero di record aggiornati lato Web.
+  Future<Map<String, dynamic>> push(List<Registration> registrations) async {
+    if (registrations.isEmpty) {
+      return {'updated': 0, 'skipped': 0, 'errors': 0, 'results': []};
+    }
+
+    final payload = registrations.map((r) => {
+      'id': r.id,
+      'status': r.status,
+      'time_description': r.timeDescription,
+      'admin_notes': r.adminNotes,
+      'updated_at': r.updatedAt,
+      'deleted_at': r.deletedAt,
+    }).toList();
+
+    final uri = Uri.parse('$_baseUrl/api/registrations/push');
     final res = await _client
-        .put(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    )
+        .post(
+          uri,
+          headers: _headers(),
+          body: jsonEncode({'registrations': payload}),
+        )
         .timeout(AppConstants.syncHttpTimeout);
 
     if (res.statusCode != 200) {
-      throw Exception(
-        'PUT status ($id -> $status) fallito: ${res.statusCode} ${res.body}',
-      );
+      throw Exception('Push fallito: ${res.statusCode} ${res.body}');
     }
+
+    return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
-  /// Chiude il client HTTP (utile nei test o alla chiusura dell'app).
   void dispose() {
     _client.close();
   }
+  /// Auto-login Web con le credenziali admin.
+  /// Salva il JWT internamente per le chiamate successive.
+  Future<bool> loginWithCredentials({
+    required String email,
+    required String password,
+  }) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/api/auth/login');
+      final res = await _client
+          .post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'password': password}),
+      )
+          .timeout(AppConstants.syncHttpTimeout);
+
+      if (res.statusCode != 200) {
+        print('❌ Login Web fallito: ${res.statusCode} ${res.body}');
+        return false;
+      }
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final token = data['token'] as String?;
+      if (token == null || token.isEmpty) {
+        print('❌ Login Web: token mancante');
+        return false;
+      }
+
+      _token = token;
+      print('✅ Login Web OK - token salvato (${token.substring(0, 20)}...)');
+      return true;
+    } catch (e) {
+      print('❌ Login Web eccezione: $e');
+      return false;
+    }
+  }
+
+  /// Verifica se il token è presente.
+  bool hasToken() => _token != null && _token!.isNotEmpty;
 }

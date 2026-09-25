@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart';
 import '../services/database_service.dart';
 import '../services/web_sync_service.dart';
 import '../utils/constants.dart';
+import '../models/organ.dart';
+import '../models/organ_slot.dart';
 
 /// Stato del processo di sync (per la UI).
 class RegistrationSyncState {
@@ -218,6 +220,58 @@ class RegistrationSyncProvider extends ChangeNotifier {
   Future<void> syncAll() async {
     await push();
     await pull();
+  }
+  /// PUSH ONE-SHOT dell'organico al Web.
+  /// Non salva stato in DB locale (a parte logSync).
+  /// Ritorna il numero di slot inviati, o -1 se errore.
+  Future<int> pushOrganToWeb({
+    required String eventSongId,
+    required Organ organ,
+    required List<OrganSlot> slots,
+  }) async {
+    _setState(_state.copyWith(isRunning: true, clearError: true));
+
+    try {
+      // Assicura token Web
+      if (!await _ensureWebToken()) {
+        _setState(_state.copyWith(
+          isRunning: false,
+          lastError: 'Login Web fallito',
+        ));
+        return -1;
+      }
+
+      final count = await _web.pushOrgan(
+        eventSongId: eventSongId,
+        organ: organ,
+        slots: slots,
+      );
+
+      await _db.logSync(
+        direction: 'push',
+        action: 'organ_pushed',
+        entityId: organ.id,
+        detail: '${slots.length} slot → event_song $eventSongId',
+      );
+
+      _setState(_state.copyWith(
+        isRunning: false,
+        lastRunAt: DateTime.now(),
+      ));
+      return count;
+    } catch (e) {
+      await _db.logSync(
+        direction: 'push',
+        action: 'error',
+        entityId: organ.id,
+        detail: 'pushOrgan fallito: $e',
+      );
+      _setState(_state.copyWith(
+        isRunning: false,
+        lastError: 'Push organico fallito: $e',
+      ));
+      return -1;
+    }
   }
 
   void clearError() {

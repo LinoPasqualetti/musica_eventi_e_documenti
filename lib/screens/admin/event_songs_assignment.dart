@@ -8,6 +8,10 @@ import '../../models/registration_model.dart';
 import 'song_form_screen.dart';
 import 'event_song_documents.dart';
 import 'organ_editor_screen.dart';
+import '../../services/organ_push_service.dart';
+import '../../services/auth_service.dart';
+import '../../models/organ_template.dart';
+import 'organ_template_picker_sheet.dart';
 
 class EventSongsAssignment extends StatefulWidget {
   final Event event;
@@ -27,6 +31,10 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
   Map<String, int> _organSlotsCount = {};
   bool _isLoading = true;
   bool _isReordering = false;
+
+  // 🔥 MULTI-SELECT per bulk apply template
+  bool _selectionMode = false;
+  final Set<String> _selectedSongIds = {};
 
   @override
   void initState() {
@@ -65,6 +73,258 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
       );
     }
   }
+
+  // ============================================
+  // MULTI-SELECT HANDLERS
+  // ============================================
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      if (!_selectionMode) _selectedSongIds.clear();
+    });
+  }
+
+  void _toggleSongSelection(String songId) {
+    setState(() {
+      if (_selectedSongIds.contains(songId)) {
+        _selectedSongIds.remove(songId);
+      } else {
+        _selectedSongIds.add(songId);
+      }
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selectedSongIds.clear();
+      _selectedSongIds.addAll(_assignedSongs.map((s) => s.id));
+    });
+  }
+
+  void _deselectAll() {
+    setState(() {
+      _selectedSongIds.clear();
+    });
+  }
+
+  // ============================================
+  // BULK APPLY TEMPLATE
+  // ============================================
+
+  Future<void> _bulkApplyTemplate() async {
+    if (_selectedSongIds.isEmpty) return;
+
+    final template = await showOrganTemplatePicker(
+      context,
+      organId: 'bulk',
+      currentSlotCount: 0,
+    );
+    if (template == null || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.queue_music, color: Colors.deepPurple),
+            SizedBox(width: 8),
+            Text('Conferma bulk apply'),
+          ],
+        ),
+        content: Text(
+          'Applicare il template "${template.name}" a '
+              '${_selectedSongIds.length} brani?\n\n'
+              'Verranno creati/aggiornati gli organici in locale e poi pushati al web.\n'
+              'I brani con organico già popolato verranno saltati.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Applica e pusha'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final eventSongIds = <String>[];
+      for (final songId in _selectedSongIds) {
+        final esId = await _db.getEventSongId(widget.event.id, songId);
+        if (esId != null) eventSongIds.add(esId);
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      if (eventSongIds.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Nessun event_song_id valido trovato'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      final report = await _db.bulkApplyTemplate(
+        eventSongIds: eventSongIds,
+        template: template,
+      );
+
+      if (!mounted) return;
+      await _loadData();
+
+      // Push al web
+      OrganPushResult? webResult;
+      if (report.applied.isNotEmpty) {
+        final toPush = <OrganToPush>[];
+        for (final item in report.applied) {
+          if (item.organId == null) continue;
+          final organ = await _db.getOrganById(item.organId!);
+          if (organ == null) continue;
+          final slots = await _db.getSlotsByOrgan(item.organId!);
+          toPush.add(OrganToPush(
+            eventSongId: item.eventSongId,
+            organ: organ,
+            slots: slots,
+          ));
+        }
+
+        if (toPush.isNotEmpty) {
+          if (!mounted) return;
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => const Center(child: CircularProgressIndicator()),
+          );
+
+          webResult = await OrganPushService.pushOrganBulk(organs: toPush);
+
+          if (mounted) Navigator.pop(context);
+        }
+      }
+
+      if (!mounted) return;
+      await _showBulkApplyReport(report, webResult);
+
+      setState(() {
+        _selectionMode = false;
+        _selectedSongIds.clear();
+      });
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Errore bulk apply: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showBulkApplyReport(
+      BulkApplyReport report,
+      OrganPushResult? webResult,
+      ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('📊 Report bulk apply'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('📱 LOCALE (Flutter)',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              if (report.applied.isNotEmpty) ...[
+                Text('✅ Applicati: ${report.applied.length}',
+                    style: const TextStyle(color: Colors.green)),
+                ...report.applied.take(5).map((a) => Text(
+                  '  • ${a.eventSongId} (${a.slotsCreated} slot)',
+                  style: const TextStyle(fontSize: 12),
+                )),
+              ],
+              if (report.skipped.isNotEmpty) ...[
+                Text('⚠️ Saltati: ${report.skipped.length}',
+                    style: const TextStyle(color: Colors.orange)),
+                ...report.skipped.take(3).map((s) => Text(
+                  '  • ${s.eventSongId}: ${s.reason ?? ""}',
+                  style: const TextStyle(fontSize: 12),
+                )),
+              ],
+              if (report.errors.isNotEmpty) ...[
+                Text('❌ Errori: ${report.errors.length}',
+                    style: const TextStyle(color: Colors.red)),
+                ...report.errors.take(3).map((e) => Text(
+                  '  • $e',
+                  style: const TextStyle(fontSize: 12),
+                )),
+              ],
+
+              const Divider(height: 24),
+
+              const Text('🌐 WEB (backend)',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              if (webResult == null)
+                const Text('⏸️ Nessun push eseguito',
+                    style: TextStyle(color: Colors.grey, fontSize: 12))
+              else if (!webResult.success)
+                Text('❌ Push fallito: ${webResult.error}',
+                    style: const TextStyle(color: Colors.red))
+              else ...[
+                  if (webResult.applied > 0)
+                    Text('✅ Applicati: ${webResult.applied}',
+                        style: const TextStyle(color: Colors.green)),
+                  if (webResult.blocked > 0)
+                    Text('🚫 Bloccati: ${webResult.blocked}',
+                        style: const TextStyle(color: Colors.orange)),
+                  if (webResult.errored > 0)
+                    Text('❌ Errori: ${webResult.errored}',
+                        style: const TextStyle(color: Colors.red)),
+                  if (webResult.applied == 0 &&
+                      webResult.blocked == 0 &&
+                      webResult.errored == 0)
+                    const Text('Nessuna modifica',
+                        style: TextStyle(color: Colors.grey)),
+                ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================
+  // FINE MULTI-SELECT / BULK APPLY
+  // ============================================
 
   // 🔥 METODO PER RIORDINARE I BRANI
   Future<void> _reorderSongs(int oldIndex, int newIndex) async {
@@ -1264,10 +1524,48 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('🎵 Brani per: ${widget.event.title}'),
+        title: Text(
+          _selectionMode
+              ? '${_selectedSongIds.length} selezionati'
+              : '🎵 Brani per: ${widget.event.title}',
+        ),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
-        actions: [
+        leading: _selectionMode
+            ? IconButton(
+          icon: const Icon(Icons.close, color: Colors.white),
+          onPressed: _toggleSelectionMode,
+          tooltip: 'Annulla selezione',
+        )
+            : null,
+        actions: _selectionMode
+            ? [
+          IconButton(
+            icon: const Icon(Icons.select_all, color: Colors.white),
+            onPressed: _selectAll,
+            tooltip: 'Seleziona tutti',
+          ),
+          IconButton(
+            icon: const Icon(Icons.deselect, color: Colors.white),
+            onPressed: _deselectAll,
+            tooltip: 'Deseleziona tutti',
+          ),
+          IconButton(
+            icon: const Icon(Icons.queue_music, color: Colors.white),
+            onPressed: _selectedSongIds.isEmpty
+                ? null
+                : _bulkApplyTemplate,
+            tooltip: 'Applica template ai selezionati',
+          ),
+        ]
+            : [
+          IconButton(
+            icon: const Icon(Icons.checklist, color: Colors.white),
+            onPressed: _assignedSongs.isEmpty
+                ? null
+                : _toggleSelectionMode,
+            tooltip: 'Seleziona brani (bulk apply)',
+          ),
           IconButton(
             icon: const Icon(Icons.add, color: Colors.white),
             onPressed: _showAddSongDialog,
@@ -1289,9 +1587,11 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
           children: [
             Row(
               children: [
-                const Text(
-                  '🎵 Brani in scaletta',
-                  style: TextStyle(
+                Text(
+                  _selectionMode
+                      ? '👆 Seleziona i brani'
+                      : '🎵 Brani in scaletta',
+                  style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                   ),
@@ -1301,7 +1601,7 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                   '${_assignedSongs.length} brani',
                   style: const TextStyle(color: Colors.grey),
                 ),
-                if (_assignedSongs.length > 1) ...[
+                if (!_selectionMode && _assignedSongs.length > 1) ...[
                   const SizedBox(width: 8),
                   Icon(
                     Icons.drag_handle,
@@ -1361,7 +1661,8 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
             else
               Expanded(
                 child: ReorderableListView(
-                  onReorder: _reorderSongs,
+                  onReorder: _selectionMode ? (_, __) {} : _reorderSongs,
+                  buildDefaultDragHandles: !_selectionMode,
                   padding: const EdgeInsets.only(bottom: 16),
                   physics: const BouncingScrollPhysics(),
                   children: _assignedSongs.asMap().entries.map((entry) {
@@ -1371,12 +1672,26 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                     final instruments = _instrumentsBySong[song.id] ?? [];
                     final docsCount = _documentsCount[song.id] ?? 0;
                     final organSlotsCount = _organSlotsCount[song.id] ?? 0;
+                    final isSelected = _selectedSongIds.contains(song.id);
 
                     return Card(
                       key: Key(song.id),
+                      color: isSelected
+                          ? Colors.deepPurple.shade50
+                          : null,
                       margin: const EdgeInsets.only(bottom: 4),
                       child: ListTile(
-                        leading: CircleAvatar(
+                        onTap: _selectionMode
+                            ? () => _toggleSongSelection(song.id)
+                            : null,
+                        leading: _selectionMode
+                            ? Checkbox(
+                          value: isSelected,
+                          onChanged: (_) =>
+                              _toggleSongSelection(song.id),
+                          activeColor: Colors.deepPurple,
+                        )
+                            : CircleAvatar(
                           backgroundColor: Colors.deepPurple.shade100,
                           child: Text(
                             '${index + 1}',
@@ -1395,62 +1710,60 @@ class _EventSongsAssignmentState extends State<EventSongsAssignment> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            // [📄 N] Documenti
-                            _buildDocumentIndicator(docsCount, song),
-                            const SizedBox(width: 6),
-                            // [🎼 N] Organico
-                            _buildOrganIndicator(organSlotsCount, song),
-                            const SizedBox(width: 6),
-                            // [👥 N] Candidature
-                            _buildCandidatureIndicator(count, song),
-                            const SizedBox(width: 4),
-                            // [⋮] Menu contestuale
-                            PopupMenuButton<String>(
-                              icon: const Icon(Icons.more_vert),
-                              onSelected: (value) async {
-                                switch (value) {
-                                  case 'modifica':
-                                    await _editSong(song);
-                                    break;
-                                  case 'candidature':
-                                    await _openCandidature(song);
-                                    break;
-                                  case 'rimuovi':
-                                    await _confirmRemoveSong(song);
-                                    break;
-                                }
-                              },
-                              itemBuilder: (context) => [
-                                const PopupMenuItem(
-                                  value: 'modifica',
-                                  child: ListTile(
-                                    leading: Icon(Icons.edit, color: Colors.deepPurple),
-                                    title: Text('Modifica brano'),
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
+                            if (!_selectionMode) ...[
+                              _buildDocumentIndicator(docsCount, song),
+                              const SizedBox(width: 6),
+                              _buildOrganIndicator(organSlotsCount, song),
+                              const SizedBox(width: 6),
+                              _buildCandidatureIndicator(count, song),
+                              const SizedBox(width: 4),
+                              PopupMenuButton<String>(
+                                icon: const Icon(Icons.more_vert),
+                                onSelected: (value) async {
+                                  switch (value) {
+                                    case 'modifica':
+                                      await _editSong(song);
+                                      break;
+                                    case 'candidature':
+                                      await _openCandidature(song);
+                                      break;
+                                    case 'rimuovi':
+                                      await _confirmRemoveSong(song);
+                                      break;
+                                  }
+                                },
+                                itemBuilder: (context) => [
+                                  const PopupMenuItem(
+                                    value: 'modifica',
+                                    child: ListTile(
+                                      leading: Icon(Icons.edit, color: Colors.deepPurple),
+                                      title: Text('Modifica brano'),
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
                                   ),
-                                ),
-                                const PopupMenuItem(
-                                  value: 'candidature',
-                                  child: ListTile(
-                                    leading: Icon(Icons.people, color: Colors.green),
-                                    title: Text('Gestisci candidature'),
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
+                                  const PopupMenuItem(
+                                    value: 'candidature',
+                                    child: ListTile(
+                                      leading: Icon(Icons.people, color: Colors.green),
+                                      title: Text('Gestisci candidature'),
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
                                   ),
-                                ),
-                                const PopupMenuDivider(),
-                                PopupMenuItem(
-                                  value: 'rimuovi',
-                                  child: ListTile(
-                                    leading: const Icon(Icons.delete_outline, color: Colors.red),
-                                    title: const Text('Rimuovi dalla scaletta'),
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
+                                  const PopupMenuDivider(),
+                                  PopupMenuItem(
+                                    value: 'rimuovi',
+                                    child: ListTile(
+                                      leading: const Icon(Icons.delete_outline, color: Colors.red),
+                                      title: const Text('Rimuovi dalla scaletta'),
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                         subtitle: Column(

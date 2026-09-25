@@ -1,10 +1,9 @@
-﻿// [MODIFICA] C:\musica_eventi_e_documenti\lib\services\database_service.dart
-
-// lib/services/database_service.dart
+﻿// lib/services/database_service.dart
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import '../models/document.dart';
@@ -26,6 +25,9 @@ import '../models/organ.dart';          // 👈 NUOVO
 import '../models/organ_slot.dart';    // 👈 NUOVO
 import 'database_migration.dart';
 import '../models/registration_with_user.dart';
+import '../models/organ_template.dart';
+import '../models/organ_template_slot.dart';
+import '../data/default_organ_templates.dart';
 
 // 🔥 IMPORT DEL LOGGER
 import '../utils/performance_logger.dart';
@@ -36,8 +38,13 @@ class DatabaseService {
   static bool _isWeb = kIsWeb;
   static bool _forceCopyFromAsset = false;
 
-  // Versione del database - AUMENTATA A 4 PER LA SYNC REGISTRAZIONI
-  static const int DB_VERSION = 7;
+  /// Generatore casuale sicuro, condiviso per tutti i suffissi di id.
+  /// Random.secure() garantisce valori diversi anche in chiamate
+  /// consecutive nello stesso microsecondo.
+  static final Random _secureRand = Random.secure();
+
+  // Versione del database - AUMENTATA A 8
+  static const int DB_VERSION = 8;
 
   DatabaseService() {
     _initDatabaseFactory();
@@ -107,6 +114,15 @@ class DatabaseService {
         print('✅ Database aperto con successo');
       },
     );
+    // Popola i template predefiniti (idempotente)
+    try {
+      final seeded = await seedDefaultTemplatesIfEmpty(db);
+      if (seeded > 0) {
+        print('✅ Seed template: $seeded predefiniti inseriti');
+      }
+    } catch (e) {
+      print('⚠️ Seed template fallito: $e');
+    }
 
     PerformanceLogger.stop('_initDatabase');
     return db;
@@ -276,6 +292,35 @@ class DatabaseService {
     print('🔄 Creazione tabelle versione $version');
     await _createTables(db);
     await _createViews(db);
+
+    // Aggiungi tabelle template + seed (per nuovi device)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS organ_templates (
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL,
+        category       TEXT,
+        description    TEXT,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT,
+        deleted_at     TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS organ_template_slots (
+        id           TEXT PRIMARY KEY,
+        template_id  TEXT NOT NULL,
+        section      TEXT NOT NULL CHECK (section IN ('ritmica','armonica','solistica','orchestrale')),
+        instrument   TEXT NOT NULL,
+        quantity     INTEGER NOT NULL DEFAULT 1,
+        notes        TEXT,
+        order_index  INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT,
+        deleted_at   TEXT,
+        FOREIGN KEY (template_id) REFERENCES organ_templates(id) ON DELETE CASCADE
+      )
+    ''');
+
     print('✅ Tabelle e viste create');
     PerformanceLogger.stop('_onCreate');
   }
@@ -316,6 +361,10 @@ class DatabaseService {
     }
     if (oldVersion < 7) {
       await DatabaseMigration.runRegistrationsCandidatesMigration(db);
+    }
+    if (oldVersion < 8) {
+      // Aggiunge tabelle organ_templates + organ_template_slots
+      await DatabaseMigration.runOrganTemplatesMigration(db);
     }
     PerformanceLogger.stop('_onUpgrade');
   }
@@ -1503,7 +1552,7 @@ class DatabaseService {
 
         if (existing.isEmpty) {
           await db.insert('song_documents', {
-            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'id': 'sd_${DateTime.now().microsecondsSinceEpoch}_${_randomSuffix()}',
             'document_id': document.id,
             'song_id': songId.toString(),
             'order_index': 0,
@@ -1891,7 +1940,7 @@ class DatabaseService {
       await db.insert(
         'event_song_documents',
         {
-          'id': DateTime.now().millisecondsSinceEpoch.toString(),
+          'id': 'esd_${DateTime.now().microsecondsSinceEpoch}_${_randomSuffix()}',
           'event_song_id': eventSongId,
           'document_id': documentId,
           'order_index': orderIndex,
@@ -2444,6 +2493,24 @@ class DatabaseService {
       return [];
     }
   }
+  /// Recupera un singolo OrganSlot tramite il suo ID.
+  /// Utile per mostrare strumento/brano di una candidatura.
+  Future<OrganSlot?> getOrganSlotById(String slotId) async {
+    try {
+      final db = await database;
+      final maps = await db.query(
+        'organ_slots',
+        where: 'id = ?',
+        whereArgs: [slotId],
+        limit: 1,
+      );
+      if (maps.isEmpty) return null;
+      return OrganSlot.fromMap(maps.first);
+    } catch (e) {
+      print('❌ Errore getOrganSlotById($slotId): $e');
+      return null;
+    }
+  }
 
   /// Inserisce un nuovo organico. Ritorna true se inserito.
   Future<bool> insertOrgan(Organ organ) async {
@@ -2566,21 +2633,30 @@ class DatabaseService {
     }
   }
 
-  /// Utility: genera un id univoco con prefisso.
-  String generateOrganId() =>
-      'org_${DateTime.now().millisecondsSinceEpoch}_${_randomSuffix()}';
-  String generateSlotId() =>
-      'slot_${DateTime.now().millisecondsSinceEpoch}_${_randomSuffix()}';
+  // ═══════════════════════════════════════════════════════════════
+  // GENERATORI DI ID UNIVOCI
+  // ═══════════════════════════════════════════════════════════════
 
+  /// Genera un suffisso univoco di 10 caratteri usando Random.secure().
+  /// Ogni chiamata produce un valore diverso, anche in loop sincrono
+  /// e anche nello stesso microsecondo.
   String _randomSuffix() {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    final rand = DateTime.now().microsecondsSinceEpoch;
     final buf = StringBuffer();
-    for (var i = 0; i < 6; i++) {
-      buf.write(chars[(rand + i * 7) % chars.length]);
+    for (var i = 0; i < 10; i++) {
+      buf.write(chars[_secureRand.nextInt(chars.length)]);
     }
     return buf.toString();
   }
+
+  /// Utility: genera un id organico univoco con prefisso.
+  String generateOrganId() =>
+      'org_${DateTime.now().microsecondsSinceEpoch}_${_randomSuffix()}';
+
+  /// Utility: genera un id slot univoco con prefisso.
+  String generateSlotId() =>
+      'slot_${DateTime.now().microsecondsSinceEpoch}_${_randomSuffix()}';
+
   /// Conta gli slot di organico per ogni brano-in-evento dell'evento specificato.
   /// Ritorna una mappa songId -> numero di slot (non cancellati).
   /// Include anche i brani con 0 slot (per uniformità con _documentsCount).
@@ -2834,4 +2910,336 @@ class DatabaseService {
       rethrow;
     }
   }
+  // ═══════════════════════════════════════════════════════════════
+  // METODI TEMPLATE ORGANICI
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Ritorna tutti i template non cancellati, ordinati per categoria + nome.
+  Future<List<OrganTemplate>> getAllOrganTemplates() async {
+    PerformanceLogger.start('getAllOrganTemplates');
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'organ_templates',
+        where: 'deleted_at IS NULL',
+        orderBy: 'category ASC, name ASC',
+      );
+      final result = rows.map((m) => OrganTemplate.fromMap(m)).toList();
+      PerformanceLogger.info('Template organici', details: '${result.length}');
+      PerformanceLogger.stop('getAllOrganTemplates');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getAllOrganTemplates fallito', error: e);
+      return [];
+    }
+  }
+
+  /// Ritorna gli slot non cancellati di un template, ordinati per sezione + order_index.
+  Future<List<OrganTemplateSlot>> getOrganTemplateSlots(String templateId) async {
+    PerformanceLogger.start('getOrganTemplateSlots');
+    try {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT * FROM organ_template_slots
+        WHERE template_id = ? AND deleted_at IS NULL
+        ORDER BY
+          CASE section
+            WHEN 'ritmica' THEN 1
+            WHEN 'armonica' THEN 2
+            WHEN 'solistica' THEN 3
+            WHEN 'orchestrale' THEN 4
+            ELSE 5
+          END ASC,
+          order_index ASC
+      ''', [templateId]);
+      final result = rows.map((m) => OrganTemplateSlot.fromMap(m)).toList();
+      PerformanceLogger.info('Slot template', details: '${result.length}');
+      PerformanceLogger.stop('getOrganTemplateSlots');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getOrganTemplateSlots fallito', error: e);
+      return [];
+    }
+  }
+
+  /// Inserisce un template.
+  Future<void> insertOrganTemplate(OrganTemplate template) async {
+    final db = await database;
+    await db.insert(
+      'organ_templates',
+      template.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Inserisce uno slot di template.
+  Future<void> insertOrganTemplateSlot(OrganTemplateSlot slot) async {
+    final db = await database;
+    await db.insert(
+      'organ_template_slots',
+      slot.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Applica un template a un organico: svuota gli slot attuali e copia
+  /// gli slot del template. Aggiorna `organs.template_id`.
+  /// Ritorna il numero di slot copiati.
+  Future<int> applyTemplateToOrgan({
+    required String organId,
+    required String templateId,
+  }) async {
+    PerformanceLogger.start('applyTemplateToOrgan');
+    try {
+      final db = await database;
+      final now = DateTime.now().toUtc().toIso8601String();
+
+      // 1. Leggi gli slot del template
+      final templateSlots = await getOrganTemplateSlots(templateId);
+      if (templateSlots.isEmpty) {
+        throw Exception('Il template non ha slot');
+      }
+
+      // 2. Transazione: cancella slot attuali, inserisci i nuovi, aggiorna template_id
+      await db.transaction((txn) async {
+        // Soft-delete degli slot attuali
+        await txn.update(
+          'organ_slots',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'organ_id = ? AND deleted_at IS NULL',
+          whereArgs: [organId],
+        );
+
+        // Inserisci copie degli slot del template.
+        // Ogni id viene generato con microsecondi + suffisso casuale
+        // per garantire unicità anche se 2+ slot cadono nello stesso microsecondo.
+        int idx = 0;
+        for (final ts in templateSlots) {
+          final newSlotId =
+              'slot_${DateTime.now().microsecondsSinceEpoch}_${idx}_${_randomSuffix()}';
+          await txn.insert('organ_slots', {
+            'id': newSlotId,
+            'organ_id': organId,
+            'section': ts.section.dbValue,
+            'instrument': ts.instrument,
+            'quantity': ts.quantity,
+            'notes': ts.notes,
+            'order_index': ts.orderIndex,
+            'created_at': now,
+            'updated_at': now,
+            'deleted_at': null,
+          });
+          idx++;
+        }
+
+        // Aggiorna organs.template_id
+        await txn.update(
+          'organs',
+          {'template_id': templateId, 'updated_at': now},
+          where: 'id = ?',
+          whereArgs: [organId],
+        );
+      });
+
+      PerformanceLogger.info('Template applicato',
+          details: '$templateId → $organId (${templateSlots.length} slot)');
+      PerformanceLogger.stop('applyTemplateToOrgan');
+      return templateSlots.length;
+    } catch (e) {
+      PerformanceLogger.error('applyTemplateToOrgan fallito', error: e);
+      PerformanceLogger.stop('applyTemplateToOrgan');
+      rethrow;
+    }
+  }
+
+  /// Popola il DB con i template predefiniti se la tabella è vuota.
+  /// Idempotente: se ci sono già dei template, non fa nulla.
+  Future<int> seedDefaultTemplatesIfEmpty([Database? dbOverride]) async {
+    PerformanceLogger.start('seedDefaultTemplatesIfEmpty');
+    try {
+      final db = dbOverride ?? await database;
+
+      // Verifica se ci sono già template
+      final existing = await db.query('organ_templates', limit: 1);
+      if (existing.isNotEmpty) {
+        PerformanceLogger.info('Seed saltato: template già presenti');
+        PerformanceLogger.stop('seedDefaultTemplatesIfEmpty');
+        return 0;
+      }
+
+      final now = DateTime.now().toUtc().toIso8601String();
+      int seeded = 0;
+
+      for (final tpl in kDefaultOrganTemplates) {
+        // Inserisci template
+        await db.insert('organ_templates', {
+          'id': tpl.id,
+          'name': tpl.name,
+          'category': tpl.category,
+          'description': tpl.description,
+          'created_at': now,
+          'updated_at': now,
+          'deleted_at': null,
+        });
+
+        // Inserisci slot.
+        // Ogni id include microsecondi + idx + suffisso casuale
+        // per garantire unicità anche tra template diversi omonimi.
+        int idx = 0;
+        for (final s in tpl.slots) {
+          final slotId =
+              '${tpl.id}_slot_${DateTime.now().microsecondsSinceEpoch}_${idx}_${_randomSuffix()}';
+          await db.insert('organ_template_slots', {
+            'id': slotId,
+            'template_id': tpl.id,
+            'section': s.section.dbValue,
+            'instrument': s.instrument,
+            'quantity': s.quantity,
+            'notes': null,
+            'order_index': idx,
+            'created_at': now,
+            'updated_at': now,
+            'deleted_at': null,
+          });
+          idx++;
+        }
+        seeded++;
+      }
+
+      PerformanceLogger.info('Template seed', details: '$seeded template');
+      PerformanceLogger.stop('seedDefaultTemplatesIfEmpty');
+      return seeded;
+    } catch (e) {
+      PerformanceLogger.error('seedDefaultTemplatesIfEmpty fallito', error: e);
+      PerformanceLogger.stop('seedDefaultTemplatesIfEmpty');
+      rethrow;
+    }
+  }
+  /// Ritorna l'organico di un event_song (il primo non cancellato),
+  /// con i suoi slot. Null se non esiste.
+  Future<Organ?> getOrganForEventSong(String eventSongId) async {
+    final organs = await getOrgansByEventSong(eventSongId);
+    if (organs.isEmpty) return null;
+    return organs.first;
+  }
+
+  /// Bulk apply: applica lo STESSO template a N event_song.
+  ///
+  /// Per ogni event_song_id:
+  /// - Se non esiste un organico → lo crea
+  /// - Se esiste un organico vuoto → svuota + applica template
+  /// - Se esiste con slot → NON tocca (va gestito dall'admin)
+  ///
+  /// Ritorna un report per event_song_id.
+  Future<BulkApplyReport> bulkApplyTemplate({
+    required List<String> eventSongIds,
+    required OrganTemplate template,
+  }) async {
+    final report = BulkApplyReport();
+    final now = DateTime.now().toUtc().toIso8601String();
+
+    // Leggi gli slot del template una volta sola
+    final templateSlots = await getOrganTemplateSlots(template.id);
+    if (templateSlots.isEmpty) {
+      report.errors.add('Template "${template.name}" non ha slot');
+      return report;
+    }
+
+    for (final eventSongId in eventSongIds) {
+      try {
+        final existingOrgans = await getOrgansByEventSong(eventSongId);
+        String organId;
+
+        if (existingOrgans.isEmpty) {
+          // Crea nuovo organico
+          organId = generateOrganId();
+          final newOrgan = Organ(
+            id: organId,
+            eventSongId: eventSongId,
+            name: template.name,
+            notes: template.description,
+            createdAt: now,
+            updatedAt: now,
+          );
+          await insertOrgan(newOrgan);
+        } else {
+          final organ = existingOrgans.first;
+          organId = organ.id;
+
+          // Verifica se ha slot (non cancellati)
+          final existingSlots = await getSlotsByOrgan(organId);
+          if (existingSlots.isNotEmpty) {
+            report.skipped.add(BulkApplyItem(
+              eventSongId: eventSongId,
+              reason: 'organico già presente con ${existingSlots.length} slot',
+            ));
+            continue;
+          }
+
+          // Aggiorna nome organico al template
+          await updateOrgan(organ.copyWith(
+            name: template.name,
+            notes: template.description,
+            updatedAt: now,
+          ));
+        }
+
+        // Inserisci gli slot dal template (snapshot indipendente)
+        int idx = 0;
+        for (final ts in templateSlots) {
+          final newSlotId = generateSlotId();
+          final slot = OrganSlot(
+            id: newSlotId,
+            organId: organId,
+            section: ts.section,
+            instrument: ts.instrument,
+            quantity: ts.quantity,
+            notes: ts.notes,
+            orderIndex: idx,
+            createdAt: now,
+            updatedAt: now,
+          );
+          await insertOrganSlot(slot);
+          idx++;
+        }
+
+        report.applied.add(BulkApplyItem(
+          eventSongId: eventSongId,
+          organId: organId,
+          slotsCreated: idx,
+        ));
+      } catch (e) {
+        report.errors.add('$eventSongId: $e');
+      }
+    }
+
+    return report;
+  }
+
+}
+/// Report di bulk apply template.
+class BulkApplyReport {
+  final List<BulkApplyItem> applied = [];
+  final List<BulkApplyItem> skipped = [];
+  final List<String> errors = [];
+
+  int get total => applied.length + skipped.length + errors.length;
+
+  @override
+  String toString() =>
+      'BulkApplyReport(applied: ${applied.length}, skipped: ${skipped.length}, errors: ${errors.length})';
+}
+
+class BulkApplyItem {
+  final String eventSongId;
+  final String? organId;
+  final int? slotsCreated;
+  final String? reason;
+
+  BulkApplyItem({
+    required this.eventSongId,
+    this.organId,
+    this.slotsCreated,
+    this.reason,
+  });
 }

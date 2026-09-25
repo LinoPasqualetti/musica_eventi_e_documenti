@@ -1,6 +1,10 @@
-// [MODIFICA] C:\musica_eventi_e_documenti\lib\screens\admin\admin_registrations.dart
+// [MODIFICA 2026-09-24] C:\musica_eventi_e_documenti\lib\screens\admin\admin_registrations.dart
+//
+// Fix:
+//  - Mostra candidate_name (guest) con fallback su user.fullName
+//  - Carica organSlot per mostrare strumento e brano corretti
+//  - Fix status: 'confirmed' invece di 'validated'
 
-// lib/screens/admin/admin_registrations.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/database_service.dart';
@@ -8,6 +12,7 @@ import '../../models/registration_model.dart';
 import '../../models/user_model.dart';
 import '../../models/event_model.dart';
 import '../../models/song_model.dart';
+import '../../models/organ_slot.dart';
 import '../../providers/registration_sync_provider.dart';
 
 class AdminRegistrations extends StatefulWidget {
@@ -23,6 +28,7 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
   Map<String, User> _userCache = {};
   Map<String, Event> _eventCache = {};
   Map<String, Song> _songCache = {};
+  Map<String, OrganSlot> _organSlotCache = {};
   bool _isLoading = true;
   String _filterStatus = 'tutti';
 
@@ -40,22 +46,46 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
       _userCache = {};
       _eventCache = {};
       _songCache = {};
+      _organSlotCache = {};
 
       for (var reg in registrations) {
-        if (!_userCache.containsKey(reg.userId)) {
+        // Carica utente
+        if (reg.userId.isNotEmpty && !_userCache.containsKey(reg.userId)) {
           final user = await _db.getUserById(reg.userId);
           if (user != null) _userCache[reg.userId] = user;
         }
-        if (!_eventCache.containsKey(reg.eventId)) {
+
+        // Carica evento
+        if (reg.eventId.isNotEmpty && !_eventCache.containsKey(reg.eventId)) {
           final event = await _db.getEventById(reg.eventId);
           if (event != null) _eventCache[reg.eventId] = event;
         }
-        if (reg.selectedSongIds != null) {
+
+        // Carica organSlot (per strumento)
+        final slotId = reg.organSlotId;
+        if (slotId != null &&
+            slotId.isNotEmpty &&
+            !_organSlotCache.containsKey(slotId)) {
+          final slot = await _db.getOrganSlotById(slotId);
+          if (slot != null) _organSlotCache[slotId] = slot;
+        }
+
+        // Carica brano (nuovo schema: songId singolo)
+        if (reg.songId != null &&
+            reg.songId!.isNotEmpty &&
+            !_songCache.containsKey(reg.songId!)) {
+          final song = await _db.getSongById(reg.songId!);
+          if (song != null) _songCache[reg.songId!] = song;
+        }
+
+        // Carica brani (legacy: selectedSongIds CSV)
+        if (reg.selectedSongIds != null && reg.selectedSongIds!.isNotEmpty) {
           final songIds = reg.selectedSongIds!.split(',');
           for (var songId in songIds) {
-            if (!_songCache.containsKey(songId)) {
-              final song = await _db.getSongById(songId);
-              if (song != null) _songCache[songId] = song;
+            final trimmed = songId.trim();
+            if (trimmed.isNotEmpty && !_songCache.containsKey(trimmed)) {
+              final song = await _db.getSongById(trimmed);
+              if (song != null) _songCache[trimmed] = song;
             }
           }
         }
@@ -71,8 +101,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
     }
   }
 
-  /// Cambia lo status locale e marca la registrazione come 'dirty'
-  /// (verrà pushata al web al prossimo "Pubblica sul web").
   Future<void> _updateStatusLocal(Registration reg, String newStatus) async {
     try {
       await _db.setRegistrationStatusLocal(reg.id, newStatus);
@@ -83,7 +111,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
     }
   }
 
-  /// PULL dal web
   Future<void> _syncFromWeb() async {
     final provider = context.read<RegistrationSyncProvider>();
     await provider.pullPending();
@@ -99,7 +126,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
     await _loadData();
   }
 
-  /// PUSH al web
   Future<void> _publishToWeb() async {
     final provider = context.read<RegistrationSyncProvider>();
     await provider.pushDirty();
@@ -125,9 +151,27 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
     );
   }
 
-  String _getUserFullName(String userId) {
-    final user = _userCache[userId];
-    return user?.fullName ?? userId;
+  /// Nome da mostrare:
+  /// 1. candidateName (candidatura guest) — priorità
+  /// 2. user.fullName (utente registrato)
+  /// 3. userId (ultimo fallback)
+  String _getDisplayName(Registration reg) {
+    if (reg.candidateName != null && reg.candidateName!.trim().isNotEmpty) {
+      return reg.candidateName!;
+    }
+    final user = _userCache[reg.userId];
+    if (user != null && user.fullName.trim().isNotEmpty) {
+      return user.fullName;
+    }
+    return reg.userId;
+  }
+
+  String? _getDisplayEmail(Registration reg) {
+    if (reg.candidateEmail != null && reg.candidateEmail!.trim().isNotEmpty) {
+      return reg.candidateEmail;
+    }
+    final user = _userCache[reg.userId];
+    return user?.email;
   }
 
   String _getEventTitle(String eventId) {
@@ -135,30 +179,71 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
     return event?.title ?? eventId;
   }
 
-  String _getSongTitles(String? songIds) {
-    if (songIds == null || songIds.isEmpty) return 'Nessuno';
-    final ids = songIds.split(',');
-    return ids.map((id) => _songCache[id]?.title ?? id).join(', ');
+  /// Strumento:
+  /// 1. organSlot.instrument (nuovo schema)
+  /// 2. reg.instrumentChoice (legacy)
+  /// 3. 'N/D'
+  String _getInstrument(Registration reg) {
+    final slotId = reg.organSlotId;
+    if (slotId != null && slotId.isNotEmpty) {
+      final slot = _organSlotCache[slotId];
+      if (slot != null && slot.instrument.isNotEmpty) {
+        return slot.instrument;
+      }
+    }
+    if (reg.instrumentChoice != null && reg.instrumentChoice!.isNotEmpty) {
+      return reg.instrumentChoice!;
+    }
+    return 'N/D';
+  }
+
+  /// Brano/i:
+  /// 1. reg.songId singolo (nuovo schema)
+  /// 2. reg.selectedSongIds (legacy, CSV)
+  /// 3. 'Nessuno'
+  String _getSongTitles(Registration reg) {
+    if (reg.songId != null && reg.songId!.isNotEmpty) {
+      final song = _songCache[reg.songId!];
+      return song?.title ?? reg.songId!;
+    }
+    if (reg.selectedSongIds != null && reg.selectedSongIds!.isNotEmpty) {
+      final ids = reg.selectedSongIds!
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty);
+      if (ids.isEmpty) return 'Nessuno';
+      return ids.map((id) => _songCache[id]?.title ?? id).join(', ');
+    }
+    return 'Nessuno';
   }
 
   List<Registration> get _filteredRegistrations {
-    if (_filterStatus == 'tutti') return _registrations;
-    return _registrations.where((r) => r.status == _filterStatus).toList();
+    if (_filterStatus == 'tutti') {
+      return _registrations.where((r) => r.deletedAt == null).toList();
+    }
+    return _registrations
+        .where((r) => r.deletedAt == null && r.status == _filterStatus)
+        .toList();
   }
 
   Color _statusColor(String status) {
     switch (status) {
       case 'pending':
         return Colors.orange;
-      case 'exported':
-      case 'imported':
-        return Colors.blue;
+      case 'waitlist':
+        return Colors.amber;
+      case 'confirmed':
       case 'validated':
         return Colors.green;
       case 'rejected':
         return Colors.red;
+      case 'cancelled':
+        return Colors.grey;
       case 'published':
         return Colors.purple;
+      case 'exported':
+      case 'imported':
+        return Colors.blue;
       default:
         return Colors.grey;
     }
@@ -168,16 +253,22 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
     switch (status) {
       case 'pending':
         return '⏳ In attesa';
+      case 'waitlist':
+        return '⌛ Lista attesa';
+      case 'confirmed':
+        return '✅ Confermata';
+      case 'validated':
+        return '✅ Validata (legacy)';
+      case 'rejected':
+        return '❌ Rifiutata';
+      case 'cancelled':
+        return '🚫 Cancellata';
+      case 'published':
+        return '📤 Pubblicata';
       case 'exported':
         return '📤 Esportata';
       case 'imported':
         return '📥 Importata';
-      case 'validated':
-        return '✅ Validata';
-      case 'rejected':
-        return '❌ Rifiutata';
-      case 'published':
-        return '🌐 Pubblicata';
       default:
         return status;
     }
@@ -194,16 +285,13 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ─── HEADER ──────────────────────────────
               Row(
                 children: [
                   const Text(
-                    '📝 Gestione Iscrizioni',
+                    '📋 Gestione Iscrizioni',
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
                   const Spacer(),
-
-                  // Bottone "Sincronizza dal web" (PULL)
                   ElevatedButton.icon(
                     onPressed: isSyncing ? null : _syncFromWeb,
                     icon: isSyncing
@@ -220,8 +308,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                     ),
                   ),
                   const SizedBox(width: 8),
-
-                  // Bottone "Pubblica sul web" (PUSH)
                   ElevatedButton.icon(
                     onPressed: isSyncing ? null : _publishToWeb,
                     icon: const Icon(Icons.cloud_upload),
@@ -232,8 +318,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                     ),
                   ),
                   const SizedBox(width: 8),
-
-                  // Bottone "Aggiorna"
                   IconButton(
                     onPressed: isSyncing ? null : _loadData,
                     icon: const Icon(Icons.refresh),
@@ -243,7 +327,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
               ),
               const SizedBox(height: 8),
 
-              // Filtri
               Row(
                 children: [
                   const Text('Filtra:'),
@@ -253,11 +336,9 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                     items: const [
                       DropdownMenuItem(value: 'tutti', child: Text('📋 Tutti')),
                       DropdownMenuItem(value: 'pending', child: Text('⏳ In attesa')),
-                      DropdownMenuItem(value: 'exported', child: Text('📤 Esportate')),
-                      DropdownMenuItem(value: 'imported', child: Text('📥 Importate')),
-                      DropdownMenuItem(value: 'validated', child: Text('✅ Validate')),
+                      DropdownMenuItem(value: 'confirmed', child: Text('✅ Confermate')),
                       DropdownMenuItem(value: 'rejected', child: Text('❌ Rifiutate')),
-                      DropdownMenuItem(value: 'published', child: Text('🌐 Pubblicate')),
+                      DropdownMenuItem(value: 'cancelled', child: Text('🚫 Cancellate')),
                     ],
                     onChanged: (value) {
                       if (value != null) setState(() => _filterStatus = value);
@@ -272,7 +353,6 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
               ),
               const SizedBox(height: 16),
 
-              // ─── LISTA ──────────────────────────────
               Expanded(
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator())
@@ -281,7 +361,8 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.people_outline, size: 64, color: Colors.grey),
+                      Icon(Icons.people_outline,
+                          size: 64, color: Colors.grey),
                       SizedBox(height: 16),
                       Text('Nessuna iscrizione trovata'),
                     ],
@@ -303,13 +384,11 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
   }
 
   Widget _buildRegistrationCard(Registration reg) {
-    final userName = _getUserFullName(reg.userId);
+    final displayName = _getDisplayName(reg);
+    final displayEmail = _getDisplayEmail(reg);
     final eventTitle = _getEventTitle(reg.eventId);
-    final songTitles = _getSongTitles(reg.selectedSongIds);
-
-    // Estrai lo stato di sync dalla mappa
-    // (il campo non è nel model Registration, lo leggiamo direttamente dal DB)
-    // Per ora mostriamo solo lo status; il sync_state lo vedremo in una seconda iterazione.
+    final instrument = _getInstrument(reg);
+    final songTitles = _getSongTitles(reg);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -338,12 +417,20 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        userName,
+                        displayName,
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
+                      if (displayEmail != null && displayEmail.isNotEmpty)
+                        Text(
+                          '📧 $displayEmail',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
                       Text(
                         '🎵 $eventTitle',
                         style: TextStyle(
@@ -355,7 +442,8 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   decoration: BoxDecoration(
                     color: _statusColor(reg.status).withOpacity(0.15),
                     borderRadius: BorderRadius.circular(12),
@@ -377,7 +465,7 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                 const Icon(Icons.music_note, size: 14, color: Colors.grey),
                 const SizedBox(width: 4),
                 Text(
-                  'Strumento: ${reg.instrumentChoice ?? 'N/D'}',
+                  'Strumento: $instrument',
                   style: const TextStyle(fontSize: 13),
                 ),
                 const SizedBox(width: 16),
@@ -392,17 +480,20 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                const Icon(Icons.star, size: 14, color: Colors.grey),
-                const SizedBox(width: 4),
-                Text(
-                  'Lettura: ${reg.readingLevel}/5  •  Improvvisazione: ${reg.improvisationLevel}/5',
-                  style: const TextStyle(fontSize: 13),
-                ),
-              ],
-            ),
+            if (reg.timeDescription != null &&
+                reg.timeDescription!.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.timer, size: 14, color: Colors.grey),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Momento: ${reg.timeDescription}',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ],
+              ),
+            ],
             if (reg.notes != null && reg.notes!.isNotEmpty) ...[
               const SizedBox(height: 4),
               Text(
@@ -410,18 +501,22 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                 style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
               ),
             ],
+            if (reg.adminNotes != null && reg.adminNotes!.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                '🔒 Admin: ${reg.adminNotes}',
+                style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
+              ),
+            ],
             const SizedBox(height: 8),
-
-            // ─── AZIONI ─────────────────────────────
-            // In base allo status, mostra bottoni diversi
             Row(
               children: [
-                if (reg.status == 'pending' || reg.status == 'exported' || reg.status == 'imported') ...[
+                if (reg.status == 'pending' || reg.status == 'waitlist') ...[
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: () => _updateStatusLocal(reg, 'validated'),
+                      onPressed: () => _updateStatusLocal(reg, 'confirmed'),
                       icon: const Icon(Icons.check, size: 16),
-                      label: const Text('Valida'),
+                      label: const Text('Conferma'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
@@ -442,10 +537,12 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                       ),
                     ),
                   ),
-                ] else if (reg.status == 'validated' || reg.status == 'rejected') ...[
+                ] else if (reg.status == 'confirmed' ||
+                    reg.status == 'rejected') ...[
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 8, horizontal: 12),
                       decoration: BoxDecoration(
                         color: Colors.amber.shade50,
                         borderRadius: BorderRadius.circular(6),
@@ -453,7 +550,8 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.info_outline, size: 16, color: Colors.amber.shade800),
+                          Icon(Icons.info_outline,
+                              size: 16, color: Colors.amber.shade800),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
@@ -471,7 +569,8 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                 ] else if (reg.status == 'published') ...[
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 8, horizontal: 12),
                       decoration: BoxDecoration(
                         color: Colors.purple.shade50,
                         borderRadius: BorderRadius.circular(6),
@@ -479,7 +578,8 @@ class _AdminRegistrationsState extends State<AdminRegistrations> {
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.check_circle, size: 16, color: Colors.purple.shade700),
+                          Icon(Icons.check_circle,
+                              size: 16, color: Colors.purple.shade700),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/registration_model.dart';
 import '../utils/constants.dart';
+import '../models/organ.dart';
+import '../models/organ_slot.dart';
 
 /// Client HTTP verso il backend web per la sync delle candidature.
 ///
@@ -169,4 +171,59 @@ class WebSyncService {
 
   /// Verifica se il token è presente.
   bool hasToken() => _token != null && _token!.isNotEmpty;
+  // ============================================
+  // PUSH ORGANICO (one-shot)
+  // ============================================
+
+  /// Invia un organico completo (organ + slots) al backend Web.
+  /// Richiede un token admin valido (auto-login già fatto).
+  /// Ritorna il numero di slot inviati.
+  Future<int> pushOrgan({
+    required String eventSongId,
+    required Organ organ,
+    required List<OrganSlot> slots,
+  }) async {
+    if (!hasToken()) {
+      throw Exception('Token admin mancante per pushOrgan');
+    }
+
+    final uri = Uri.parse('$_baseUrl/api/organs/sync');
+
+    final payload = {
+      'event_song_id': eventSongId,
+      'organ': {
+        'id': organ.id,
+        'name': organ.name,
+        'notes': organ.notes,
+      },
+      'slots': slots
+          .map((s) => {
+        'id': s.id,
+        'section': s.section.dbValue,
+        'instrument': s.instrument,
+        'quantity': s.quantity,
+        'notes': s.notes,
+        'order_index': s.orderIndex,
+      })
+          .toList(),
+    };
+
+    final res = await _client
+        .post(
+      uri,
+      headers: _headers(),
+      body: jsonEncode(payload),
+    )
+        .timeout(AppConstants.syncHttpTimeout);
+
+    if (res.statusCode != 200) {
+      throw Exception('Push organico fallito: ${res.statusCode} ${res.body}');
+    }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+// Leggi lo stats.slotsCreated dal backend, con fallback
+    final stats = data['stats'] as Map<String, dynamic>?;
+    final slotsCreated = stats?['slotsCreated'] as int?;
+    return slotsCreated ?? slots.length;
+  }
 }

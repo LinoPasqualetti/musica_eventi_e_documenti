@@ -311,4 +311,59 @@ class DatabaseMigration {
 
     print('✅ Migrazione registrations per candidati completata');
   }
+  /// Crea le tabelle per i template di organico predefiniti
+  /// e aggiunge il campo `template_id` a `organs`.
+  /// Idempotente.
+  static Future<void> runOrganTemplatesMigration(Database db) async {
+    print('🔄 Migrazione template organici...');
+
+    // 1. Tabella organ_templates
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS organ_templates (
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL,
+        category       TEXT,
+        description    TEXT,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT,
+        deleted_at     TEXT
+      )
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organ_templates_category '
+          'ON organ_templates(category)',
+    );
+
+    // 2. Tabella organ_template_slots
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS organ_template_slots (
+        id           TEXT PRIMARY KEY,
+        template_id  TEXT NOT NULL,
+        section      TEXT NOT NULL CHECK (section IN ('ritmica','armonica','solistica','orchestrale')),
+        instrument   TEXT NOT NULL,
+        quantity     INTEGER NOT NULL DEFAULT 1,
+        notes        TEXT,
+        order_index  INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT,
+        deleted_at   TEXT,
+        FOREIGN KEY (template_id) REFERENCES organ_templates(id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_organ_template_slots_template_id '
+          'ON organ_template_slots(template_id)',
+    );
+
+    // 3. Aggiungi colonna template_id a organs
+    final cols = await db.rawQuery('PRAGMA table_info(organs)');
+    final existing = cols.map((c) => c['name'] as String).toSet();
+    if (!existing.contains('template_id')) {
+      await db.execute('ALTER TABLE organs ADD COLUMN template_id TEXT');
+    }
+
+    print('✅ Migrazione template organici completata');
+  }
 }

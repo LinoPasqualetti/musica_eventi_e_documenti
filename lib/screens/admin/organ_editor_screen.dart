@@ -1,9 +1,13 @@
 // lib/screens/admin/organ_editor_screen.dart
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../services/database_service.dart';
 import '../../models/organ.dart';
 import '../../models/organ_slot.dart';
+import '../../providers/registration_sync_provider.dart';
 import 'organ_slot_form.dart';
+import 'organ_template_picker_sheet.dart';
+import 'organ_wizard_screen.dart';
 
 class OrganEditorScreen extends StatefulWidget {
   final String eventSongId;
@@ -115,6 +119,211 @@ class _OrganEditorScreenState extends State<OrganEditorScreen> {
     }
   }
 
+  /// Invia l'organico corrente al backend Web (one-shot push).
+  Future<void> _pushToWeb() async {
+    if (_organ == null) return;
+
+    if (_slots.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Nessuno slot da inviare. Aggiungi almeno uno slot.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    // Chiedi conferma
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Invia organico al Web?'),
+        content: Text(
+          'Verranno inviati ${_slots.length} slot al Web. '
+              'Gli slot esistenti sul Web per questo brano verranno sostituiti.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Invia'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    if (!mounted) return;
+    final provider = context.read<RegistrationSyncProvider>();
+
+    // Mostra loading
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(width: 12),
+            Text('Invio in corso...'),
+          ],
+        ),
+        duration: Duration(minutes: 1),
+      ),
+    );
+
+    final count = await provider.pushOrganToWeb(
+      eventSongId: widget.eventSongId,
+      organ: _organ!,
+      slots: _slots,
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+
+    if (count >= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ Organico inviato: $count slot'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } else {
+      final err = provider.lastError ?? 'Errore sconosciuto';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ $err'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
+  }
+
+  /// Apre il wizard avanzato di composizione organico (stile Finale).
+  Future<void> _openWizard() async {
+    if (_organ == null) return;
+
+    // Carica i template disponibili
+    final templates = await _db.getAllOrganTemplates();
+
+    if (!mounted) return;
+
+    final result = await showOrganWizard(
+      context,
+      organId: _organ!.id,
+      songTitle: widget.songTitle,
+      eventTitle: widget.eventTitle,
+      initialSlots: _slots,
+      availableTemplates: templates,
+    );
+
+    if (result == null) return; // Utente ha annullato
+
+    // Sostituisci gli slot esistenti con quelli del wizard
+    try {
+      // Elimina i vecchi
+      for (final slot in _slots) {
+        await _db.deleteOrganSlot(slot.id);
+      }
+      // Inserisci i nuovi
+      for (final slot in result) {
+        await _db.insertOrganSlot(slot);
+      }
+      await _reloadSlots();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ Organico aggiornato: ${result.length} slot'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      _showError('Errore applicazione wizard: $e');
+    }
+  }
+
+  /// Apre il bottom sheet di selezione template e applica il template scelto.
+  Future<void> _applyTemplate() async {
+    if (_organ == null) return;
+
+    // Conta slot attuali
+    final currentCount = _slots.length;
+
+    final tpl = await showOrganTemplatePicker(
+      context,
+      organId: _organ!.id,
+      currentSlotCount: currentCount,
+    );
+    if (tpl == null) return;
+
+    // Se ci sono già slot, chiedi conferma
+    if (currentCount > 0) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sostituire l\'organico?'),
+          content: Text(
+            'Stai per sostituire i $currentCount slot attuali con quelli '
+                'del template "${tpl.name}". L\'operazione non è reversibile.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Annulla'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Sostituisci'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    // Applica il template
+    try {
+      final applied = await _db.applyTemplateToOrgan(
+        organId: _organ!.id,
+        templateId: tpl.id,
+      );
+      await _reloadSlots();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ Template "${tpl.name}" applicato: $applied slot'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Errore: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Future<void> _addSlot() async {
     if (_organ == null) return;
     final result = await showOrganSlotForm(
@@ -212,6 +421,23 @@ class _OrganEditorScreenState extends State<OrganEditorScreen> {
         title: Text('🎼 ${widget.songTitle}'),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'Wizard avanzato',
+            onPressed: _openWizard,
+          ),
+          IconButton(
+            icon: const Icon(Icons.library_music),
+            tooltip: 'Applica template',
+            onPressed: _applyTemplate,
+          ),
+          IconButton(
+            icon: const Icon(Icons.cloud_upload),
+            tooltip: 'Invia organico al Web',
+            onPressed: _pushToWeb,
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(20),
           child: Padding(

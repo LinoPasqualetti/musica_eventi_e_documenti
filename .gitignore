@@ -57,3 +57,41 @@ analisi_*.ps1
 
 # File generati da Flutter (auto)
 .flutter-plugins-dependencies
+# === Musica Eventi e Documenti ===
+
+# Backup
+*.bak
+*.bak_*
+*.bak.*
+*.premium_*
+*.old
+_backup_*/
+_manual_replace/
+*_backup_*
+
+# Script di lavoro
+_patch_*.py
+fix_mojibake.*
+check-flutter-*.ps1
+check-flutter-*.js
+copy-*.js
+copy-*.ps1
+
+# File temporanei Office
+~$*.docx
+~$*.xlsx
+~$*.pptx
+
+# File generati
+.flutter-plugins-dependencies
+*.log
+
+# Copie di lavoro
+*- Copia*.html
+*- Copia*.dart
+*NUOVO.html
+*NUOVO.dart
+
+# Binari grossi che non vogliamo versionare (opzionale)
+# assets/db/musica_eventi_e_documenti.db
+# assets/mxl/*.mxl

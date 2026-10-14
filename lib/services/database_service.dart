@@ -1566,11 +1566,13 @@ class DatabaseService {
       print('✅ Documento inserito: ${document.fileName}');
       PerformanceLogger.info('Documento inserito', details: document.fileName);
       PerformanceLogger.stop('insertDocument');
-
-      // ─── NUOVO: PUSH AL WEB (fire and forget) ─────────────────────
-      _pushDocumentToWeb(document, songId?.toString()).catchError((e) {
-        print('⚠️ Push documento al web fallito: $e');
-      });
+      // ─── PUSH AL WEB: RIMOSSO ─────────────────────────────────────
+      // Il push avviene SOLO su azione esplicita dell'utente
+      // (pulsante "Sincronizza" in admin_documents.dart).
+      // Motivazione: il push automatico rendeva insertDocument
+      // bloccante (28s di timeout su socket) e accoppiava il DB
+      // locale Flutter al backend Web, vanificando l'architettura
+      // "due DB distinti".
     } catch (e) {
       PerformanceLogger.error('insertDocument fallito', error: e);
       rethrow;
@@ -1597,16 +1599,53 @@ class DatabaseService {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // 🔥 FIX: updateDocument ora rimuove song_id/songId dalla mappa
+  // prima di scrivere, esattamente come fa insertDocument.
+  // Questo risolve l'errore "no such column: song_id" che si verificava
+  // quando si aggiornava un documento esistente.
+  // ═══════════════════════════════════════════════════════════════
   Future<void> updateDocument(Document document) async {
     PerformanceLogger.start('updateDocument');
     try {
       final db = await database;
+
+      // 1. Costruisci la mappa e rimuovi i campi "song_id"/"songId"
+      //    che NON appartengono alla tabella documents.
+      final Map<String, dynamic> documentMap = document.toMap();
+      final dynamic songId = documentMap.remove('song_id');
+      documentMap.remove('songId');
+
+      // 2. Aggiorna la riga in `documents` (senza song_id)
       await db.update(
         'documents',
-        document.toMap(),
+        documentMap,
         where: 'id = ?',
         whereArgs: [document.id],
       );
+
+      // 3. Se è stato passato un songId, gestisci la relazione
+      //    nella tabella `song_documents` (come fa insertDocument).
+      if (songId != null && songId.toString().isNotEmpty) {
+        final existing = await db.query(
+          'song_documents',
+          where: 'document_id = ? AND song_id = ?',
+          whereArgs: [document.id, songId.toString()],
+        );
+
+        if (existing.isEmpty) {
+          await db.insert('song_documents', {
+            'id': 'sd_${DateTime.now().microsecondsSinceEpoch}_${_randomSuffix()}',
+            'document_id': document.id,
+            'song_id': songId.toString(),
+            'order_index': 0,
+            'notes': null,
+            'created_at': DateTime.now().toIso8601String(),
+            'updated_at': null,
+          });
+        }
+      }
+
       print('✅ Documento aggiornato: ${document.fileName}');
       PerformanceLogger.info('Documento aggiornato', details: document.fileName);
       PerformanceLogger.stop('updateDocument');
@@ -1616,6 +1655,201 @@ class DatabaseService {
     }
   }
 
+  /// Cerca un documento duplicato (stesso file_name + doc_type, ID diverso).
+  /// Ritorna il primo duplicato trovato, o null se non ci sono.
+  Future<Document?> findDuplicateDocument(Document doc) async {
+    PerformanceLogger.start('findDuplicateDocument');
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'documents',
+        columns: ['id', 'doc_type', 'file_name', 'file_path', 'file_size',
+                  'mime_type', 'description', 'storage_mode', 'is_public',
+                  'uploaded_by', 'created_at', 'updated_at'],
+        where: 'file_name = ? AND doc_type = ? AND id != ?',
+        whereArgs: [doc.fileName, doc.docType, doc.id],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        PerformanceLogger.info('Nessun duplicato trovato', details: doc.fileName);
+        PerformanceLogger.stop('findDuplicateDocument');
+        return null;
+      }
+      final duplicate = Document.fromMap(rows.first);
+      PerformanceLogger.info('Duplicato trovato',
+          details: '${duplicate.fileName} (ID: ${duplicate.id})');
+      PerformanceLogger.stop('findDuplicateDocument');
+      return duplicate;
+    } catch (e) {
+      PerformanceLogger.error('findDuplicateDocument fallito', error: e);
+      PerformanceLogger.stop('findDuplicateDocument');
+      return null;
+    }
+  }
+
+  /// Unisce due documenti duplicati.
+  ///
+  /// [existingId] = ID del documento gia' nel DB.
+  /// [newDoc] = documento nuovo (in memoria, non ancora inserito).
+  /// [keepExisting] = true  -> tieni ID esistente, aggiorna contenuto col nuovo.
+  ///                  false -> tieni ID nuovo, sposta relazioni del vecchio.
+  ///
+  /// Gestisce anche i conflitti UNIQUE su song_documents e event_song_documents.
+  Future<void> mergeDocument({
+    required String existingId,
+    required Document newDoc,
+    required bool keepExisting,
+  }) async {
+    PerformanceLogger.start('mergeDocument');
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    try {
+      await db.transaction((txn) async {
+        final documentMap = newDoc.toMap();
+        documentMap.remove('song_id');
+        documentMap.remove('songId');
+
+        if (keepExisting) {
+          // CASO A: tieni il VECCHIO ID, aggiorna contenuto col nuovo
+          documentMap.remove('id');
+          documentMap['updated_at'] = now;
+
+          await txn.update(
+            'documents',
+            documentMap,
+            where: 'id = ?',
+            whereArgs: [existingId],
+          );
+
+          // Ripunta song_documents: nuovo -> esistente
+          final oldSongRels = await txn.query(
+            'song_documents',
+            columns: ['song_id'],
+            where: 'document_id = ?',
+            whereArgs: [existingId],
+          );
+          final oldSongIds = oldSongRels.map((r) => r['song_id'] as String).toList();
+
+          if (oldSongIds.isNotEmpty) {
+            final ph = List.filled(oldSongIds.length, '?').join(',');
+            await txn.rawDelete(
+              'DELETE FROM song_documents WHERE document_id = ? AND song_id IN ($ph)',
+              [newDoc.id, ...oldSongIds],
+            );
+          }
+          await txn.update(
+            'song_documents',
+            {'document_id': existingId, 'updated_at': now},
+            where: 'document_id = ?',
+            whereArgs: [newDoc.id],
+          );
+
+          // Ripunta event_song_documents: nuovo -> esistente
+          final oldEsdRels = await txn.query(
+            'event_song_documents',
+            columns: ['event_song_id'],
+            where: 'document_id = ?',
+            whereArgs: [existingId],
+          );
+          final oldEsdIds = oldEsdRels.map((r) => r['event_song_id'] as String).toList();
+
+          if (oldEsdIds.isNotEmpty) {
+            final ph = List.filled(oldEsdIds.length, '?').join(',');
+            await txn.rawDelete(
+              'DELETE FROM event_song_documents WHERE document_id = ? AND event_song_id IN ($ph)',
+              [newDoc.id, ...oldEsdIds],
+            );
+          }
+          await txn.update(
+            'event_song_documents',
+            {'document_id': existingId, 'updated_at': now},
+            where: 'document_id = ?',
+            whereArgs: [newDoc.id],
+          );
+
+          await txn.delete(
+            'documents',
+            where: 'id = ?',
+            whereArgs: [newDoc.id],
+          );
+
+          PerformanceLogger.info('Merge completato (keepExisting)',
+              details: '$existingId <- ${newDoc.id}');
+        } else {
+          // CASO B: tieni il NUOVO ID, sposta relazioni del vecchio
+          documentMap['updated_at'] = now;
+
+          await txn.insert(
+            'documents',
+            documentMap,
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+
+          // Ripunta song_documents: esistente -> nuovo
+          final newSongRels = await txn.query(
+            'song_documents',
+            columns: ['song_id'],
+            where: 'document_id = ?',
+            whereArgs: [newDoc.id],
+          );
+          final newSongIds = newSongRels.map((r) => r['song_id'] as String).toList();
+
+          if (newSongIds.isNotEmpty) {
+            final ph = List.filled(newSongIds.length, '?').join(',');
+            await txn.rawDelete(
+              'DELETE FROM song_documents WHERE document_id = ? AND song_id IN ($ph)',
+              [existingId, ...newSongIds],
+            );
+          }
+          await txn.update(
+            'song_documents',
+            {'document_id': newDoc.id, 'updated_at': now},
+            where: 'document_id = ?',
+            whereArgs: [existingId],
+          );
+
+          // Ripunta event_song_documents: esistente -> nuovo
+          final newEsdRels = await txn.query(
+            'event_song_documents',
+            columns: ['event_song_id'],
+            where: 'document_id = ?',
+            whereArgs: [newDoc.id],
+          );
+          final newEsdIds = newEsdRels.map((r) => r['event_song_id'] as String).toList();
+
+          if (newEsdIds.isNotEmpty) {
+            final ph = List.filled(newEsdIds.length, '?').join(',');
+            await txn.rawDelete(
+              'DELETE FROM event_song_documents WHERE document_id = ? AND event_song_id IN ($ph)',
+              [existingId, ...newEsdIds],
+            );
+          }
+          await txn.update(
+            'event_song_documents',
+            {'document_id': newDoc.id, 'updated_at': now},
+            where: 'document_id = ?',
+            whereArgs: [existingId],
+          );
+
+          await txn.delete(
+            'documents',
+            where: 'id = ?',
+            whereArgs: [existingId],
+          );
+
+          PerformanceLogger.info('Merge completato (keepNew)',
+              details: '${newDoc.id} <- $existingId');
+        }
+      });
+
+      PerformanceLogger.stop('mergeDocument');
+    } catch (e) {
+      PerformanceLogger.error('mergeDocument fallito', error: e);
+      PerformanceLogger.stop('mergeDocument');
+      rethrow;
+    }
+  }
   Future<void> deleteDocument(String id) async {
     PerformanceLogger.start('deleteDocument');
     try {
@@ -3215,8 +3449,101 @@ class DatabaseService {
 
     return report;
   }
+  // ═══════════════════════════════════════════════════════════════
+  // METODI AGGREGATI PER VISTA ADMIN ISCRIZIONI
+  // ═══════════════════════════════════════════════════════════════
 
+  /// Ritorna tutti gli OrganSlot di tutti gli organici, raggruppati
+  /// per event_song_id. Una sola query per l'intera applicazione.
+  ///
+  /// Mappa: { event_song_id: [OrganSlot, OrganSlot, ...] }
+  Future<Map<String, List<OrganSlot>>> getAllOrganSlotsGroupedByEventSong() async {
+    PerformanceLogger.start('getAllOrganSlotsGroupedByEventSong');
+    try {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT os.id, os.organ_id, os.instrument, os.section, os.quantity,
+               os.order_index, os.notes,
+               os.created_at, os.updated_at, os.deleted_at,
+               o.event_song_id
+        FROM organ_slots os
+        JOIN organs o ON o.id = os.organ_id
+        WHERE os.deleted_at IS NULL AND o.deleted_at IS NULL
+      ''');
+
+      final result = <String, List<OrganSlot>>{};
+      for (final r in rows) {
+        final esId = r['event_song_id'] as String?;
+        if (esId == null) continue;
+        result.putIfAbsent(esId, () => []);
+        result[esId]!.add(OrganSlot.fromMap(r));
+      }
+      PerformanceLogger.info('Slot organici raggruppati',
+          details: '${result.length} event-song');
+      PerformanceLogger.stop('getAllOrganSlotsGroupedByEventSong');
+      return result;
+    } catch (e) {
+      PerformanceLogger.error('getAllOrganSlotsGroupedByEventSong fallito',
+          error: e);
+      PerformanceLogger.stop('getAllOrganSlotsGroupedByEventSong');
+      return {};
+    }
+  }
+
+  /// Ritorna il mapping { "event_id::song_id": "event_song_id" } per
+  /// risolvere velocemente l'event_song di una registrazione.
+  Future<Map<String, String>> getEventSongIdMap() async {
+    PerformanceLogger.start('getEventSongIdMap');
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'event_songs',
+        columns: ['id', 'event_id', 'song_id'],
+      );
+      final map = <String, String>{};
+      for (final r in rows) {
+        final key = '${r['event_id']}::${r['song_id']}';
+        map[key] = r['id'] as String;
+      }
+      PerformanceLogger.info('Mappa event_song',
+          details: '${map.length} entries');
+      PerformanceLogger.stop('getEventSongIdMap');
+      return map;
+    } catch (e) {
+      PerformanceLogger.error('getEventSongIdMap fallito', error: e);
+      PerformanceLogger.stop('getEventSongIdMap');
+      return {};
+    }
+  }
+  /// Ritorna la lista di tutti gli event_songs di un evento,
+  /// con song_id e song_title. Include anche quelli senza candidature.
+  Future<List<Map<String, dynamic>>> getAllEventSongsWithSongTitle(String eventId) async {
+    PerformanceLogger.start('getAllEventSongsWithSongTitle');
+    try {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT es.id AS event_song_id,
+               es.event_id,
+               es.song_id,
+               s.title AS song_title,
+               es.order_index
+        FROM event_songs es
+        LEFT JOIN songs s ON s.id = es.song_id
+        WHERE es.event_id = ?
+        ORDER BY es.order_index ASC, s.title ASC
+      ''', [eventId]);
+      PerformanceLogger.info('Event-songs di un evento',
+          details: '${rows.length} brani');
+      PerformanceLogger.stop('getAllEventSongsWithSongTitle');
+      return rows;
+    } catch (e) {
+      PerformanceLogger.error('getAllEventSongsWithSongTitle fallito', error: e);
+      PerformanceLogger.stop('getAllEventSongsWithSongTitle');
+      return [];
+    }
+  }
 }
+
 /// Report di bulk apply template.
 class BulkApplyReport {
   final List<BulkApplyItem> applied = [];

@@ -42,7 +42,8 @@ class _SpartitoViewerScreenState extends State<SpartitoViewerScreen> {
 
   Future<void> _loadTemplate() async {
     try {
-      final html = await rootBundle.loadString('assets/html/spartito-viewer.html');
+      final bytes = await rootBundle.load('assets/html/spartito-viewer.html');
+      final html = utf8.decode(bytes.buffer.asUint8List());
       if (!mounted) return;
       setState(() {
         _htmlTemplate = html;

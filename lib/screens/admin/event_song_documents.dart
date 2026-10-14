@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import '../../services/database_service.dart';
+import '../../services/document_storage_policy.dart';
 import '../../models/event_model.dart';
 import '../../models/document.dart';
 import '../../utils/performance_logger.dart';
@@ -26,7 +27,8 @@ class EventSongDocumentsScreen extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  State<EventSongDocumentsScreen> createState() => _EventSongDocumentsScreenState();
+  State<EventSongDocumentsScreen> createState() =>
+      _EventSongDocumentsScreenState();
 }
 
 class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
@@ -47,7 +49,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
 
     setState(() => _isLoading = true);
     try {
-      final assigned = await _db.getEventSongDocumentsWithDetails(widget.eventSongId);
+      final assigned =
+      await _db.getEventSongDocumentsWithDetails(widget.eventSongId);
       final songDocuments = await _db.getDocumentsBySong(widget.songId);
 
       final assignedIds = <String>{};
@@ -58,7 +61,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         }
       }
 
-      final available = songDocuments.where((d) => !assignedIds.contains(d.id)).toList();
+      final available =
+      songDocuments.where((d) => !assignedIds.contains(d.id)).toList();
 
       setState(() {
         _assignedDocuments = assigned;
@@ -67,8 +71,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
       });
 
       PerformanceLogger.info('Documenti caricati',
-          details: 'Assegnati: ${assigned.length}, Disponibili: ${available.length}');
-
+          details:
+          'Assegnati: ${assigned.length}, Disponibili: ${available.length}');
     } catch (e) {
       setState(() => _isLoading = false);
       PerformanceLogger.error('_loadData fallito', error: e);
@@ -100,7 +104,6 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
       }
 
       PerformanceLogger.info('Documento aggiunto', details: doc.fileName);
-
     } catch (e) {
       PerformanceLogger.error('_addDocument fallito', error: e);
       if (mounted) {
@@ -127,7 +130,7 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
       await _loadData();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          const SnackBar(
             content: Text('🗑️ Documento rimosso da questo evento'),
             backgroundColor: Colors.orange,
           ),
@@ -135,7 +138,6 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
       }
 
       PerformanceLogger.info('Documento rimosso', details: doc['file_name']);
-
     } catch (e) {
       PerformanceLogger.error('_removeDocument fallito', error: e);
       if (mounted) {
@@ -181,11 +183,10 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
     PerformanceLogger.start('_createNewDocument');
 
     try {
-      // 🔥 USA FileType.any PER SELEZIONARE QUALSIASI FILE (inclusi MID, KAR, MXL, ABC)
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: false,
-        withData: true, // 🔥 NECESSARIO PER LEGGERE I BYTE SU ANDROID!
-        type: FileType.any, // 🔥 NON USARE FileType.custom! Permette TUTTO!
+        withData: true,
+        type: FileType.any,
       );
 
       if (result == null || result.files.isEmpty) return;
@@ -193,41 +194,36 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
       final file = result.files.first;
       final fileName = file.name;
       final fileSize = file.size;
-      final filePath = file.path; // Percorso (per Windows) - potrebbe essere null su Android
+      final filePath = file.path;
 
-      // 🔥 DICHIARA LE VARIABILI PRIMA DI USARLE!
-      String docType = _getTypeFromExtension(fileName.split('.').last.toLowerCase());
+      String docType =
+      _getTypeFromExtension(fileName.split('.').last.toLowerCase());
+
+      // 🔥 DECISIONE CENTRALIZZATA blob vs filesystem
+      final decisionPath = filePath ?? fileName;
+      String storageMode = DocumentStoragePolicy.decide(
+        filePath: decisionPath,
+        fileSize: fileSize,
+      );
 
       Uint8List? content;
-      String storageMode = 'filesystem';
-
-      // 🔥 SE IL PERCORSO ESISTE (Windows): prova a leggere dal file fisico
-      if (filePath != null && await File(filePath).exists()) {
-        if (['mid', 'kar', 'abc', 'mxl'].contains(docType)) {
-          content = await File(filePath).readAsBytes();
-          storageMode = 'blob';
-          print('📦 BLOB da file fisico: ${content!.length} bytes');
-        }
-      } else {
-        // 🔥 PER ANDROID (Google Drive, ecc.): usa file.bytes!
-        if (file.bytes != null) {
-          content = file.bytes;
-          storageMode = 'blob';
-          print('📦 BLOB da file.bytes: ${content!.length} bytes');
-        }
-      }
-
-      // 🔥 FALLBACK: se non abbiamo ancora il BLOB, prova a leggere dal percorso
-      if (content == null && filePath != null) {
+      if (storageMode == 'blob') {
         try {
-          content = await File(filePath).readAsBytes();
-          storageMode = 'blob';
+          if (filePath != null && await File(filePath).exists()) {
+            content = await File(filePath).readAsBytes();
+          } else if (file.bytes != null) {
+            content = file.bytes;
+          } else {
+            // Niente contenuto disponibile: forza filesystem
+            storageMode = 'filesystem';
+          }
         } catch (e) {
           print('❌ Errore lettura file: $e');
+          storageMode = 'filesystem';
+          content = null;
         }
       }
 
-      // 🔥 DICHIARA IL CONTROLLER PER LA DESCRIZIONE
       final descriptionController = TextEditingController();
       final titleController = TextEditingController(text: fileName);
 
@@ -268,6 +264,16 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                 'Dimensione: ${_formatFileSize(fileSize)}',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
+              const SizedBox(height: 8),
+              Text(
+                'Storage: $storageMode',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: storageMode == 'blob'
+                      ? Colors.blue.shade700
+                      : Colors.green.shade700,
+                ),
+              ),
             ],
           ),
           actions: [
@@ -293,22 +299,119 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
 
       if (resultDialog != true) return;
 
-      // 🔥 COSTRUISCI IL DOCUMENTO
+      // ✅ FIX: rimossa la riga `songId: widget.songId`.
+      // Il collegamento brano↔documento avviene già più sotto con
+      // `insertDocument` (che gestisce song_documents) e con
+      // `addDocumentToEventSong` (che gestisce event_song_documents).
       final document = Document(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
         docType: docType,
         fileName: titleController.text.trim(),
-        filePath: filePath, // Può essere null su Android
+        filePath: filePath,
         fileSize: fileSize,
         description: descriptionController.text.trim(),
         isPublic: true,
         uploadedBy: 'admin',
         createdAt: DateTime.now().toIso8601String(),
-        content: content, // 🔥 BLOB per Android!
+        content: content,
         storageMode: storageMode,
-        songId: widget.songId,
       );
 
+      // --- CHECK DUPLICATI ---
+      final duplicate = await _db.findDuplicateDocument(document);
+
+      if (duplicate != null) {
+        final choice = await showDialog<String>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Possibile duplicato'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Esiste gia un documento con lo stesso nome e tipo:'),
+                const SizedBox(height: 8),
+                Text('Nome: ${duplicate.fileName}'),
+                Text('ID: ${duplicate.id}'),
+                Text('Creato: ${duplicate.createdAt}'),
+                const SizedBox(height: 12),
+                const Text('Cosa vuoi fare?'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'cancel'),
+                child: const Text('Annulla'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'new'),
+                child: const Text('Salva come nuovo'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, 'merge'),
+                child: const Text('Unisci'),
+              ),
+            ],
+          ),
+        );
+
+        if (choice == null || choice == 'cancel') return;
+
+        if (choice == 'merge') {
+          final keepExisting = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Unisci documenti'),
+              content: const Text(
+                'Quale documento vuoi mantenere?\n\n'
+                '- Tieni esistente: mantiene l ID corrente, aggiorna il contenuto col nuovo\n'
+                '- Tieni nuovo: mantiene il nuovo ID, sposta le relazioni del vecchio',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Tieni esistente'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Tieni nuovo'),
+                ),
+              ],
+            ),
+          );
+
+          if (keepExisting == null) return;
+
+          await _db.mergeDocument(
+            existingId: duplicate.id,
+            newDoc: document,
+            keepExisting: keepExisting,
+          );
+
+          final effectiveDocId = keepExisting ? duplicate.id : document.id;
+
+          await _db.addDocumentToEventSong(
+            widget.eventSongId,
+            effectiveDocId,
+            orderIndex: _assignedDocuments.length,
+          );
+          await _loadData();
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Documenti uniti e aggiunti all evento'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      // --- SALVATAGGIO ---
       await _db.insertDocument(document);
       await _db.addDocumentToEventSong(
         widget.eventSongId,
@@ -326,8 +429,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         );
       }
 
-      PerformanceLogger.info('Documento creato', details: document.fileName);
-
+      PerformanceLogger.info('Documento creato',
+          details: '${document.fileName} ($storageMode)');
     } catch (e) {
       PerformanceLogger.error('_createNewDocument fallito', error: e);
       if (mounted) {
@@ -345,27 +448,44 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
 
   String _getTypeFromExtension(String extension) {
     switch (extension.toLowerCase()) {
-      case 'pdf': return 'pdf';
-      case 'mxl': return 'mxl';
-      case 'xml': return 'mxl';
-      case 'abc': return 'abc';
-      case 'mp3': return 'audio_mp3';
-      case 'wav': return 'audio_wav';
-      case 'mid': return 'mid';
-      case 'kar': return 'kar';
-      case 'jpg': return 'image';
-      case 'jpeg': return 'image';
-      case 'png': return 'image';
-      case 'gif': return 'image';
-      case 'svg': return 'image';
-      case 'txt': return 'txt';
-      default: return 'unknown';
+      case 'pdf':
+        return 'pdf';
+      case 'mxl':
+        return 'mxl';
+      case 'xml':
+        return 'mxl';
+      case 'abc':
+        return 'abc';
+      case 'mp3':
+        return 'audio_mp3';
+      case 'wav':
+        return 'audio_wav';
+      case 'mid':
+        return 'mid';
+      case 'kar':
+        return 'kar';
+      case 'jpg':
+        return 'image';
+      case 'jpeg':
+        return 'image';
+      case 'png':
+        return 'image';
+      case 'gif':
+        return 'image';
+      case 'svg':
+        return 'image';
+      case 'txt':
+        return 'txt';
+      default:
+        return 'unknown';
     }
   }
 
   String _formatFileSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
@@ -396,7 +516,6 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Documenti assegnati a questo evento
             Row(
               children: [
                 const Text(
@@ -422,7 +541,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: const Center(
-                  child: Text('Nessun documento assegnato a questo evento per questo brano'),
+                  child: Text(
+                      'Nessun documento assegnato a questo evento per questo brano'),
                 ),
               )
             else
@@ -450,10 +570,14 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(doc['doc_type'] ?? ''),
-                            if (doc['description'] != null && doc['description'].toString().isNotEmpty)
+                            if (doc['description'] != null &&
+                                doc['description']
+                                    .toString()
+                                    .isNotEmpty)
                               Text(
                                 doc['description'],
-                                style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.grey),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -463,12 +587,14 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.visibility, color: Colors.blue),
+                              icon: const Icon(Icons.visibility,
+                                  color: Colors.blue),
                               onPressed: () => _viewDocument(doc),
                               tooltip: 'Visualizza',
                             ),
                             IconButton(
-                              icon: const Icon(Icons.remove_circle, color: Colors.red),
+                              icon: const Icon(Icons.remove_circle,
+                                  color: Colors.red),
                               onPressed: () => _removeDocument(doc),
                               tooltip: 'Rimuovi da questo evento',
                             ),
@@ -479,10 +605,7 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                   },
                 ),
               ),
-
             const Divider(height: 32),
-
-            // Documenti globali del brano disponibili
             Row(
               children: [
                 const Text(
@@ -508,7 +631,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                 decoration: BoxDecoration(
                   color: Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
+                  border:
+                  Border.all(color: Colors.grey.shade300),
                 ),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -551,13 +675,16 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                       ),
                       title: Text(doc.fileName),
                       subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment:
+                        CrossAxisAlignment.start,
                         children: [
                           Text(doc.docType),
                           if (doc.description.isNotEmpty)
                             Text(
                               doc.description,
-                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -567,7 +694,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton(
-                            icon: const Icon(Icons.visibility, color: Colors.blue),
+                            icon: const Icon(Icons.visibility,
+                                color: Colors.blue),
                             onPressed: () {
                               final docMap = {
                                 'document_id': doc.id,
@@ -576,7 +704,8 @@ class _EventSongDocumentsScreenState extends State<EventSongDocumentsScreen> {
                                 'file_path': doc.filePath,
                                 'file_size': doc.fileSize,
                                 'description': doc.description,
-                                'is_public': doc.isPublic ? 1 : 0,
+                                'is_public':
+                                doc.isPublic ? 1 : 0,
                               };
                               _viewDocument(docMap);
                             },

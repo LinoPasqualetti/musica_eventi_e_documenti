@@ -9,7 +9,7 @@ import 'admin_registrations.dart';
 import 'admin_users.dart';
 import 'admin_suggestions.dart';
 import 'admin_documents.dart';
-import 'admin_database.dart';  // ✅ NUOVA IMPORT
+import 'admin_database.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({Key? key}) : super(key: key);
@@ -21,57 +21,48 @@ class AdminDashboard extends StatefulWidget {
 class _AdminDashboardState extends State<AdminDashboard> {
   int _selectedIndex = 0;
 
-  // ✅ AGGIUNTA LA NUOVA SCHERMATA
+  // 🔧 CAMBIATO: Database ora è in 6ª posizione (penultima)
   final List<Widget> _screens = [
-    const AdminEvents(),
-    const AdminSongs(),
-    const AdminRegistrations(),
-    const AdminUsers(),
-    const AdminSuggestions(),
-    const AdminDocuments(),
-    const AdminDatabase(),  // ✅ NUOVA SEZIONE
+    const AdminEvents(),        // 0
+    const AdminSongs(),         // 1
+    const AdminRegistrations(), // 2
+    const AdminUsers(),         // 3
+    const AdminSuggestions(),   // 4
+    const AdminDatabase(),      // 5 ← SPOSTATO QUI (era 6)
+    const AdminDocuments(),     // 6 ← SPOSTATO QUI (era 5)
   ];
 
-  // ✅ AGGIUNTO IL NUOVO TITOLO
   final List<String> _titles = [
-    '📅 Eventi',
-    '🎵 Pezzi',
-    '📝 Iscrizioni',
-    '👥 Utenti',
-    '💡 Suggerimenti',
-    '📄 Documenti',
-    '📊 Database',  // ✅ NUOVA SEZIONE
+    '📅 Eventi',        // 0
+    '🎵 Pezzi',         // 1
+    '📝 Iscrizioni',    // 2
+    '👥 Utenti',        // 3
+    '💡 Suggerimenti',  // 4
+    '📊 Database',      // 5 ← SPOSTATO
+    '📄 Documenti',     // 6 ← SPOSTATO
   ];
 
-  // ✅ AGGIUNTA LA NUOVA ICONA
   final List<IconData> _icons = [
-    Icons.event,
-    Icons.music_note,
-    Icons.people,
-    Icons.person,
-    Icons.lightbulb,
-    Icons.folder,
-    Icons.storage,  // ✅ NUOVA SEZIONE
+    Icons.event,       // 0
+    Icons.music_note,  // 1
+    Icons.people,      // 2
+    Icons.person,      // 3
+    Icons.lightbulb,   // 4
+    Icons.storage,     // 5 ← SPOSTATO
+    Icons.folder,      // 6 ← SPOSTATO
   ];
 
   @override
   Widget build(BuildContext context) {
-    final authProvider = Provider.of<AuthProvider>(context);
-
-    // Se l'utente non è admin, torna alla home
-    if (!authProvider.isAdmin) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
-        );
-      });
-      return const Scaffold(
-        body: Center(
-          child: Text('Accesso non autorizzato'),
-        ),
-      );
-    }
+    // 🔍 DEBUG: verifica che le liste siano allineate
+    final screenSize = MediaQuery.of(context).size;
+    print('🔍 DEBUG NavigationRail:');
+    print('   Schermo: ${screenSize.width} x ${screenSize.height}');
+    print('   _titles.length: ${_titles.length}');
+    print('   _icons.length: ${_icons.length}');
+    print('   _screens.length: ${_screens.length}');
+    print('   Destinations hardcoded: 7');
+    print('   _selectedIndex attuale: $_selectedIndex');
 
     return Scaffold(
       appBar: AppBar(
@@ -88,13 +79,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
               color: Colors.amber.shade700,
               borderRadius: BorderRadius.circular(16),
             ),
-            child: Row(
+            child: const Row(
               children: [
-                const Icon(Icons.star, size: 14, color: Colors.white),
-                const SizedBox(width: 4),
+                Icon(Icons.star, size: 14, color: Colors.white),
+                SizedBox(width: 4),
                 Text(
-                  'Admin: ${authProvider.currentUser?.fullName ?? ''}',
-                  style: const TextStyle(
+                  'Admin',
+                  style: TextStyle(
                     color: Colors.white,
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -107,7 +98,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () {
-              authProvider.logout();
+              Provider.of<AuthProvider>(context, listen: false).logout();
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(builder: (context) => const HomeScreen()),
@@ -119,10 +110,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
       ),
       body: Row(
         children: [
-          // Navigation Rail (menu laterale)
+          // Navigation Rail
           NavigationRail(
             selectedIndex: _selectedIndex,
             onDestinationSelected: (index) {
+              print('🔍 Click su index: $index (${_titles[index]})');
               setState(() {
                 _selectedIndex = index;
               });
@@ -142,34 +134,35 @@ class _AdminDashboardState extends State<AdminDashboard> {
             unselectedLabelTextStyle: const TextStyle(
               color: Colors.grey,
             ),
-            destinations: [
+            // 🔧 CAMBIATO: Database ora è in 6ª posizione (penultima)
+            destinations: const [
               NavigationRailDestination(
-                icon: Icon(_icons[0]),
-                label: Text(_titles[0]),
+                icon: Icon(Icons.event),
+                label: Text('📅 Eventi'),         // 0
               ),
               NavigationRailDestination(
-                icon: Icon(_icons[1]),
-                label: Text(_titles[1]),
+                icon: Icon(Icons.music_note),
+                label: Text('🎵 Pezzi'),           // 1
               ),
               NavigationRailDestination(
-                icon: Icon(_icons[2]),
-                label: Text(_titles[2]),
+                icon: Icon(Icons.people),
+                label: Text('📝 Iscrizioni'),      // 2
               ),
               NavigationRailDestination(
-                icon: Icon(_icons[3]),
-                label: Text(_titles[3]),
+                icon: Icon(Icons.person),
+                label: Text('👥 Utenti'),          // 3
               ),
               NavigationRailDestination(
-                icon: Icon(_icons[4]),
-                label: Text(_titles[4]),
+                icon: Icon(Icons.lightbulb),
+                label: Text('💡 Suggerimenti'),    // 4
               ),
               NavigationRailDestination(
-                icon: Icon(_icons[5]),
-                label: Text(_titles[5]),
+                icon: Icon(Icons.storage),
+                label: Text('📊 Database'),        // 5 ← SPOSTATO QUI
               ),
               NavigationRailDestination(
-                icon: Icon(_icons[6]),
-                label: Text(_titles[6]),
+                icon: Icon(Icons.folder),
+                label: Text('📄 Documenti'),       // 6 ← SPOSTATO QUI
               ),
             ],
           ),

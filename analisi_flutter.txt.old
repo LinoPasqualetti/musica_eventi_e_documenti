@@ -1,0 +1,381 @@
+﻿============================================================
+ANALISI APP FLUTTER/DART
+Cartella : C:\musica_eventi_e_documenti
+Data     : 2026-09-17 16:46:03
+============================================================
+
+========== STRUTTURA CARTELLE (max 4 livelli) ==========
+.\_backup_pre_hetzner_20260915
+.\_broken_backup_outside
+.\assets
+.\assets\audio
+.\assets\audio\MidiKar
+.\assets\audio\Mp3Wavw
+.\assets\audio\Pino Daniele
+.\assets\audio\Pino Daniele\Pdf
+.\assets\audio\Pino Daniele\Titoli Compatti
+.\assets\db
+.\assets\html
+.\assets\html\js
+.\assets\html\soundfonts
+.\assets\images
+.\assets\mxl
+.\assets\sheets
+.\lib
+.\lib\models
+.\lib\providers
+.\lib\screens
+.\lib\screens\admin
+.\lib\scripts
+.\lib\services
+.\lib\utils
+.\lib\widgets
+.\test
+
+========== CONTEGGIO FILE PER ESTENSIONE ==========
+.mid         188 file
+.dart         59 file
+.kar          32 file
+.mxl           9 file
+.yaml          3 file
+.txt           3 file
+.html          2 file
+.mp3           2 file
+.pdf           2 file
+.iml           2 file
+.flutter-plugins-dependencies     1 file
+.csv           1 file
+.xml           1 file
+.db            1 file
+.md            1 file
+.metadata      1 file
+.sql           1 file
+.lock          1 file
+
+========== FILE DART (percorso | righe) ==========
+.\_backup_pre_hetzner_20260915\abc_viewer.dart | 80 righe
+.\_backup_pre_hetzner_20260915\Appoggio.dart | 72 righe
+.\_backup_pre_hetzner_20260915\midi_player_screen.dart | 457 righe
+.\_broken_backup_outside\admin_screen_orphan.dart | 60 righe
+.\lib\main.dart | 45 righe
+.\lib\models\document.dart | 106 righe
+.\lib\models\event_model.dart | 261 righe
+.\lib\models\event_song.dart | 41 righe
+.\lib\models\musical_document.dart | 61 righe
+.\lib\models\registration_model.dart | 96 righe
+.\lib\models\song_document.dart | 41 righe
+.\lib\models\song_model.dart | 69 righe
+.\lib\models\user_model.dart | 73 righe
+.\lib\providers\auth_provider.dart | 147 righe
+.\lib\providers\event_provider.dart | 53 righe
+.\lib\providers\registration_sync_provider.dart | 169 righe
+.\lib\screens\abc_viewer_screen.dart | 333 righe
+.\lib\screens\admin\admin_dashboard.dart | 175 righe
+.\lib\screens\admin\admin_database.dart | 295 righe
+.\lib\screens\admin\admin_documents.dart | 575 righe
+.\lib\screens\admin\admin_events.dart | 246 righe
+.\lib\screens\admin\admin_registrations.dart | 471 righe
+.\lib\screens\admin\admin_songs.dart | 186 righe
+.\lib\screens\admin\admin_suggestions.dart | 96 righe
+.\lib\screens\admin\admin_users.dart | 115 righe
+.\lib\screens\admin\document_form_screen.dart | 476 righe
+.\lib\screens\admin\event_form_screen.dart | 270 righe
+.\lib\screens\admin\event_song_documents.dart | 554 righe
+.\lib\screens\admin\event_songs_assignment.dart | 1312 righe
+.\lib\screens\admin\events_list_screen.dart | 188 righe
+.\lib\screens\admin\song_form_screen.dart | 339 righe
+.\lib\screens\admin_login_screen.dart | 325 righe
+.\lib\screens\admin_screen.dart | 192 righe
+.\lib\screens\document_viewer_screen.dart | 1294 righe
+.\lib\screens\event_detail_screen.dart | 659 righe
+.\lib\screens\home_screen.dart | 582 righe
+.\lib\screens\login_screen.dart | 220 righe
+.\lib\screens\mxl_viewer_screen.dart | 314 righe
+.\lib\screens\register_screen.dart | 166 righe
+.\lib\screens\registration_form_screen.dart | 423 righe
+.\lib\screens\spartito_viewer_screen.dart | 102 righe
+.\lib\scripts\populate_blob_content.dart | 63 righe
+.\lib\services\abc_to_midi.dart | 184 righe
+.\lib\services\auth_service.dart | 129 righe
+.\lib\services\database_migration.dart | 177 righe
+.\lib\services\database_service.dart | 2096 righe
+.\lib\services\document_file_resolver.dart | 61 righe
+.\lib\services\document_push_service.dart | 92 righe
+.\lib\services\mxl_converter.dart | 79 righe
+.\lib\services\mxl_service.dart | 80 righe
+.\lib\services\notation_player_launcher.dart | 24 righe
+.\lib\services\pending_uploads_service.dart | 64 righe
+.\lib\services\performance_logger.dart | 223 righe
+.\lib\utils\constants.dart | 19 righe
+.\lib\utils\performance_logger.dart | 54 righe
+.\lib\utils\ui_performance.dart | 53 righe
+.\lib\widgets\event_card.dart | 211 righe
+.\lib\widgets\song_tile.dart | 54 righe
+.\test\widget_test.dart | 24 righe
+
+========== MODELLI / CLASSI DART ==========
+.\_backup_pre_hetzner_20260915\abc_viewer.dart
+   - class AbcViewer
+.\_backup_pre_hetzner_20260915\Appoggio.dart
+   - class EventProvider
+.\_backup_pre_hetzner_20260915\midi_player_screen.dart
+   - class MidiPlayerScreen
+   - class _MidiPlayerScreenState
+.\_broken_backup_outside\admin_screen_orphan.dart
+   - class AdminScreen
+   - class _AdminScreenState
+.\lib\main.dart
+   - class MyApp
+.\lib\models\document.dart
+   - class Document
+.\lib\models\event_model.dart
+   - class Event
+   - class EventSong
+   - class EventSongDocument
+.\lib\models\event_song.dart
+   - class EventSong
+.\lib\models\musical_document.dart
+   - class MusicalDocument
+.\lib\models\registration_model.dart
+   - class Registration
+.\lib\models\song_document.dart
+   - class SongDocument
+.\lib\models\song_model.dart
+   - class Song
+.\lib\models\user_model.dart
+   - class User
+.\lib\providers\auth_provider.dart
+   - class AuthProvider
+.\lib\providers\event_provider.dart
+   - class EventProvider
+.\lib\providers\registration_sync_provider.dart
+   - class RegistrationSyncState
+   - class RegistrationSyncProvider
+.\lib\screens\abc_viewer_screen.dart
+   - class AbcViewerScreen
+   - class _AbcViewerScreenState
+.\lib\screens\admin\admin_dashboard.dart
+   - class AdminDashboard
+   - class _AdminDashboardState
+.\lib\screens\admin\admin_database.dart
+   - class AdminDatabase
+   - class _AdminDatabaseState
+.\lib\screens\admin\admin_documents.dart
+   - class AdminDocuments
+   - class _AdminDocumentsState
+.\lib\screens\admin\admin_events.dart
+   - class AdminEvents
+   - class _AdminEventsState
+.\lib\screens\admin\admin_registrations.dart
+   - class AdminRegistrations
+   - class _AdminRegistrationsState
+.\lib\screens\admin\admin_songs.dart
+   - class AdminSongs
+   - class _AdminSongsState
+.\lib\screens\admin\admin_suggestions.dart
+   - class AdminSuggestions
+   - class _AdminSuggestionsState
+.\lib\screens\admin\admin_users.dart
+   - class AdminUsers
+   - class _AdminUsersState
+.\lib\screens\admin\document_form_screen.dart
+   - class DocumentFormScreen
+   - class _DocumentFormScreenState
+.\lib\screens\admin\event_form_screen.dart
+   - class EventFormScreen
+   - class _EventFormScreenState
+.\lib\screens\admin\event_song_documents.dart
+   - class EventSongDocumentsScreen
+   - class _EventSongDocumentsScreenState
+.\lib\screens\admin\event_songs_assignment.dart
+   - class EventSongsAssignment
+   - class _EventSongsAssignmentState
+.\lib\screens\admin\events_list_screen.dart
+   - class EventsListScreen
+   - class _EventsListScreenState
+.\lib\screens\admin\song_form_screen.dart
+   - class SongFormScreen
+   - class _SongFormScreenState
+.\lib\screens\admin_login_screen.dart
+   - class AdminLoginScreen
+   - class _AdminLoginScreenState
+.\lib\screens\admin_screen.dart
+   - class AdminScreen
+   - class _AdminScreenState
+.\lib\screens\document_viewer_screen.dart
+   - class DocumentViewerScreen
+   - class _DocumentViewerScreenState
+.\lib\screens\event_detail_screen.dart
+   - class EventDetailScreen
+   - class _EventDetailScreenState
+.\lib\screens\home_screen.dart
+   - class HomeScreen
+   - class _HomeScreenState
+.\lib\screens\login_screen.dart
+   - class LoginScreen
+   - class _LoginScreenState
+.\lib\screens\mxl_viewer_screen.dart
+   - class MxlViewerScreen
+   - class _MxlViewerScreenState
+.\lib\screens\register_screen.dart
+   - class RegisterScreen
+   - class _RegisterScreenState
+.\lib\screens\registration_form_screen.dart
+   - class RegistrationFormScreen
+   - class _RegistrationFormScreenState
+.\lib\screens\spartito_viewer_screen.dart
+   - class SpartitoViewerScreen
+   - class _SpartitoViewerScreenState
+.\lib\services\abc_to_midi.dart
+   - class AbcToMidiConverter
+   - class MidiNote
+.\lib\services\auth_service.dart
+   - class AuthService
+.\lib\services\database_migration.dart
+   - class DatabaseMigration
+.\lib\services\database_service.dart
+   - class DatabaseService
+.\lib\services\document_file_resolver.dart
+   - class DocumentFileResolver
+.\lib\services\document_push_service.dart
+   - class DocumentPushService
+.\lib\services\mxl_converter.dart
+   - class MxlToAbcConverter
+.\lib\services\mxl_service.dart
+   - class MxlService
+.\lib\services\notation_player_launcher.dart
+   - class NotationPlayerLauncher
+.\lib\services\pending_uploads_service.dart
+   - class PendingUploadsService
+.\lib\services\performance_logger.dart
+   - class PerformanceLogger
+   - class LogEntry
+.\lib\utils\constants.dart
+   - class AppConstants
+.\lib\utils\performance_logger.dart
+   - class PerformanceLogger
+.\lib\utils\ui_performance.dart
+   - class UIPerformance
+.\lib\widgets\event_card.dart
+   - class EventCard
+   - class _EventCardState
+.\lib\widgets\song_tile.dart
+   - class SongTile
+
+========== DIPENDENZE (pubspec.yaml) ==========
+--- dependencies (30) ---
+
+Pacchetto                   Versione  
+---------                   --------  
+android_intent_plus         ^5.1.0    
+archive                     ^4.0.7    
+audioplayers                ^6.4.0    
+connectivity_plus           ^6.1.3    
+crypto                      ^3.0.3    
+cupertino_icons             ^1.0.6    
+file_picker                 ^8.3.7    
+flutter                     (sdk/path)
+flutter_inappwebview        ^6.1.5    
+flutter_local_notifications ^18.0.1   
+flutter_riverpod            ^2.6.1    
+http                        ^1.2.2    
+image_picker                ^1.1.2    
+intl                        ^0.19.0   
+open_filex                  ^4.3.4    
+path                        ^1.9.0    
+path_provider               ^2.1.3    
+pdf                         ^3.11.3   
+printing                    ^5.13.4   
+provider                    ^6.1.2    
+qr                          ^3.0.2    
+riverpod                    ^2.6.1    
+share_plus                  ^10.1.4   
+shared_preferences          ^2.3.5    
+sqflite                     ^2.3.3+1  
+sqflite_common_ffi          ^2.3.3+1  
+sqflite_common_ffi_web      ^1.1.0    
+url_launcher                ^6.3.1    
+webview_flutter             ^4.8.0    
+xml                         ^6.5.0
+
+--- dev_dependencies (2) ---
+
+Pacchetto     Versione  
+---------     --------  
+flutter_lints ^5.0.0    
+flutter_test  (sdk/path)
+
+========== DATABASE ==========
+File DB/SQL rilevati:
+  .\assets\db\init.sql | 13.381 bytes
+  .\assets\db\musica_eventi_e_documenti.db | 14.733.312 bytes
+
+Driver / pacchetti DB tra le dipendenze:
+  - archive ^4.0.7
+  - sqflite ^2.3.3+1
+  - sqflite_common_ffi ^2.3.3+1
+  - sqflite_common_ffi_web ^1.1.0
+
+Schema SQL (CREATE TABLE / INDEX / VIEW):
+  --- .\assets\db\init.sql ---
+     CREATE TABLE IF NOT EXISTS users (
+     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+     CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+     CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+     CREATE TABLE IF NOT EXISTS events (
+     CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
+     CREATE INDEX IF NOT EXISTS idx_events_category ON events(category);
+     CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+     CREATE INDEX IF NOT EXISTS idx_events_difficulty ON events(difficulty);
+     CREATE TABLE IF NOT EXISTS songs (
+     CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title);
+     CREATE INDEX IF NOT EXISTS idx_songs_composer ON songs(composer);
+     CREATE TABLE IF NOT EXISTS event_songs (
+     CREATE INDEX IF NOT EXISTS idx_event_songs_event_id ON event_songs(event_id);
+     CREATE INDEX IF NOT EXISTS idx_event_songs_song_id ON event_songs(song_id);
+     CREATE TABLE IF NOT EXISTS song_infos (
+     CREATE INDEX IF NOT EXISTS idx_song_infos_song_id ON song_infos(song_id);
+     CREATE INDEX IF NOT EXISTS idx_song_infos_info_type ON song_infos(info_type);
+     CREATE TABLE IF NOT EXISTS musical_documents (
+     CREATE INDEX IF NOT EXISTS idx_musical_documents_song_id ON musical_documents(song_id);
+     CREATE INDEX IF NOT EXISTS idx_musical_documents_doc_type ON musical_documents(doc_type);
+     CREATE TABLE IF NOT EXISTS instrument_parts (
+     CREATE INDEX IF NOT EXISTS idx_instrument_parts_song_id ON instrument_parts(song_id);
+     CREATE INDEX IF NOT EXISTS idx_instrument_parts_instrument ON instrument_parts(instrument);
+     CREATE TABLE IF NOT EXISTS registrations (
+     CREATE INDEX IF NOT EXISTS idx_registrations_event_id ON registrations(event_id);
+     CREATE INDEX IF NOT EXISTS idx_registrations_user_id ON registrations(user_id);
+     CREATE INDEX IF NOT EXISTS idx_registrations_status ON registrations(status);
+     CREATE TABLE IF NOT EXISTS event_suggestions (
+     CREATE INDEX IF NOT EXISTS idx_event_suggestions_user_id ON event_suggestions(user_id);
+     CREATE INDEX IF NOT EXISTS idx_event_suggestions_status ON event_suggestions(status);
+     CREATE TABLE IF NOT EXISTS image_suggestions (
+     CREATE INDEX IF NOT EXISTS idx_image_suggestions_user_id ON image_suggestions(user_id);
+     CREATE INDEX IF NOT EXISTS idx_image_suggestions_event_id ON image_suggestions(event_id);
+     CREATE INDEX IF NOT EXISTS idx_image_suggestions_status ON image_suggestions(status);
+     CREATE TABLE IF NOT EXISTS user_feedback (
+     CREATE INDEX IF NOT EXISTS idx_user_feedback_user_id ON user_feedback(user_id);
+     CREATE INDEX IF NOT EXISTS idx_user_feedback_event_id ON user_feedback(event_id);
+     CREATE INDEX IF NOT EXISTS idx_user_feedback_status ON user_feedback(status);
+     CREATE TABLE IF NOT EXISTS activity_log (
+     CREATE INDEX IF NOT EXISTS idx_activity_log_user_id ON activity_log(user_id);
+     CREATE INDEX IF NOT EXISTS idx_activity_log_action ON activity_log(action);
+     CREATE TABLE IF NOT EXISTS downloads (
+     CREATE INDEX IF NOT EXISTS idx_downloads_user_id ON downloads(user_id);
+     CREATE INDEX IF NOT EXISTS idx_downloads_document_id ON downloads(document_id);
+     CREATE INDEX IF NOT EXISTS idx_downloads_download_date ON downloads(download_date);
+
+Contenuto cartella assets/db (solo file DB/SQL/JSON):
+  - init.sql (13.381 bytes)
+  - musica_eventi_e_documenti.db (14.733.312 bytes)
+
+============================================================
+RIEPILOGO
+============================================================
+Cartelle            : 26
+File totali (puliti): 310
+File .dart          : 59
+Righe Dart (totale) : 15426
+Dimensione totale   : 36.72 MB
+Report              : C:\musica_eventi_e_documenti\analisi_flutter.txt
+============================================================

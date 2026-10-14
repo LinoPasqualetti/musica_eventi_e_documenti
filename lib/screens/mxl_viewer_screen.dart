@@ -1,4 +1,4 @@
-// [MODIFICA] C:\musica_eventi_e_documenti\lib\screens\mxl_viewer_screen.dart
+﻿// [MODIFICA] C:\musica_eventi_e_documenti\lib\screens\mxl_viewer_screen.dart
 
 // lib/screens/mxl_viewer_screen.dart
 import 'package:flutter/material.dart';
@@ -10,6 +10,7 @@ import 'package:open_filex/open_filex.dart';
 import '../models/document.dart';
 import '../services/mxl_service.dart';
 import '../utils/constants.dart';
+import '../services/viewer_service.dart';
 
 class MxlViewerScreen extends StatefulWidget {
   final Document document;
@@ -62,9 +63,10 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
     setState(() => _isLoading = false);
   }
 
-  /// 🔥 NUOVO FLUSSO: carica il .mxl sul backend e apre /mxl-viewer?id=...
+  /// ðŸ”¥ NUOVO FLUSSO: carica il .mxl sul backend e apre /mxl-viewer?id=...
   /// Il backend serve il binario, il browser lo converte e lo renderizza
   /// con ScoreViewer.jsx (stessa logica del web).
+  /// Apre il file MXL nel browser usando un viewer HTML locale (nessun backend).
   Future<void> _openInBrowser() async {
     setState(() => _isOpening = true);
     try {
@@ -74,51 +76,25 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
       final file = File(filePath);
       if (!await file.exists()) throw 'File non trovato: $filePath';
 
-      final bytes = await file.readAsBytes();
-
-      final apiBase = AppConstants.webApiBaseUrl;
-      final postUri = Uri.parse('$apiBase/api/mxl-temp').replace(
-        queryParameters: {'fileName': widget.document.fileName},
+      // Genera il viewer HTML locale passando il .mxl come base64
+      final viewerPath = await ViewerService.buildMxlViewerFromFile(
+        mxlFilePath: filePath,
+        fileName: widget.document.fileName,
       );
 
-      final res = await http
-          .post(
-            postUri,
-            headers: {
-              'Content-Type': 'application/octet-stream',
-              'X-File-Name': widget.document.fileName,
-            },
-            body: bytes,
-          )
-          .timeout(const Duration(seconds: 60));
+      final uri = Uri.file(viewerPath);
+      print('Apro viewer MXL locale: $uri');
 
-      if (res.statusCode != 200) {
-        throw 'Backend HTTP ${res.statusCode}: ${res.body}';
-      }
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final id = data['id'] as String?;
-      if (id == null) throw 'Risposta backend senza id';
-
-      final viewerUri = Uri.parse('$apiBase/mxl-viewer').replace(
-        queryParameters: {
-          'id': id,
-          'fileName': widget.document.fileName,
-        },
-      );
-
-      print('🌐 Apro viewer MXL: $viewerUri');
-
-      if (await canLaunchUrl(viewerUri)) {
-        await launchUrl(viewerUri, mode: LaunchMode.externalApplication);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
       } else {
-        throw 'Impossibile aprire il browser per $viewerUri';
+        throw 'Impossibile aprire il browser per $viewerPath';
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('❌ Errore: $e'),
+            content: Text('Errore: $e'),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 6),
           ),
@@ -138,7 +114,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
         if (result.type != ResultType.done) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('⚠️ Errore apertura: ${result.message}'),
+              content: Text('âš ï¸ Errore apertura: ${result.message}'),
               backgroundColor: Colors.orange,
             ),
           );
@@ -154,7 +130,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('❌ Errore: $e'),
+          content: Text('âŒ Errore: $e'),
           backgroundColor: Colors.red,
         ),
       );
@@ -165,7 +141,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('🎼 ${widget.document.fileName}'),
+        title: Text('ðŸŽ¼ ${widget.document.fileName}'),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
         actions: [
@@ -245,14 +221,14 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '🎵 ${_metadata['title'] ?? widget.document.fileName}',
+                      'ðŸŽµ ${_metadata['title'] ?? widget.document.fileName}',
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                     Text(
-                      '✍️ ${_metadata['composer'] ?? 'Compositore sconosciuto'}',
+                      'âœï¸ ${_metadata['composer'] ?? 'Compositore sconosciuto'}',
                       style: const TextStyle(fontSize: 14),
                     ),
                   ],
@@ -276,7 +252,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                   ),
                   const SizedBox(height: 16),
                   const Text(
-                    '🎼 Spartito MusicXML',
+                    'ðŸŽ¼ Spartito MusicXML',
                     style: TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.bold,
@@ -296,7 +272,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                         children: [
                           CircularProgressIndicator(),
                           SizedBox(height: 12),
-                          Text('Caricamento spartito sul server…'),
+                          Text('Caricamento spartito sul serverâ€¦'),
                         ],
                       ),
                     )
@@ -309,7 +285,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                         ElevatedButton.icon(
                           onPressed: _openInBrowser,
                           icon: const Icon(Icons.open_in_browser),
-                          label: const Text('🌐 Apri nel browser'),
+                          label: const Text('ðŸŒ Apri nel browser'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.blue,
                             foregroundColor: Colors.white,
@@ -318,7 +294,7 @@ class _MxlViewerScreenState extends State<MxlViewerScreen> {
                         ElevatedButton.icon(
                           onPressed: _openWithDefaultApp,
                           icon: const Icon(Icons.open_in_new),
-                          label: const Text('🔧 Apri con Finale'),
+                          label: const Text('ðŸ”§ Apri con Finale'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.green,
                             foregroundColor: Colors.white,

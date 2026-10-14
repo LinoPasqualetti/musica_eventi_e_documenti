@@ -16,7 +16,7 @@ class Document {
   final String uploadedBy;
   final String createdAt;
   final String? updatedAt;
-  final String? songId;
+  //final String? songId;
 
   Document({
     required this.id,
@@ -32,7 +32,7 @@ class Document {
     required this.uploadedBy,
     required this.createdAt,
     this.updatedAt,
-    this.songId,
+   // this.songId,
   });
 
   bool get isBlob => storageMode == 'blob' && content != null;
@@ -55,7 +55,7 @@ class Document {
       'uploaded_by': uploadedBy,
       'created_at': createdAt,
       'updated_at': updatedAt,
-      'song_id': songId,
+      //'song_id': songId,
     };
   }
 
@@ -74,7 +74,7 @@ class Document {
       uploadedBy: map['uploaded_by'] ?? '',
       createdAt: map['created_at'] ?? '',
       updatedAt: map['updated_at'],
-      songId: map['song_id'],
+      //songId: map['song_id'],
     );
   }
 
@@ -92,7 +92,7 @@ class Document {
     String? uploadedBy,
     String? createdAt,
     String? updatedAt,
-    String? songId,
+    //String? songId,
   }) {
     return Document(
       id: id ?? this.id,
@@ -108,7 +108,7 @@ class Document {
       uploadedBy: uploadedBy ?? this.uploadedBy,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
-      songId: songId ?? this.songId,
+     // songId: songId ?? this.songId,
     );
   }
 }

@@ -1,10 +1,10 @@
-name: musica_eventi_e_documenti
+﻿name: musica_eventi_e_documenti
 description: "App per la gestione di eventi musicali live inclusivi - Musica per Tutti"
 publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-    sdk: '>=3.0.0 <4.0.0'  # ✅ Compatibile con Dart 3.10.7
+    sdk: '>=3.0.0 <4.0.0'  # âœ… Compatibile con Dart 3.10.7
 
 dependencies:
     webview_flutter: ^4.8.0
@@ -26,7 +26,7 @@ dependencies:
     crypto: ^3.0.3
 
     # ============================================
-    # UI E UTILITÀ
+    # UI E UTILITÃ€
     # ============================================
     cupertino_icons: ^1.0.6
     intl: ^0.19.0
@@ -87,5 +87,8 @@ flutter:
         - assets/sheets/
         - assets/audio/
         - assets/html/
-        - assets/html/js/          # 🔥 AGGIUNTO PER MIDI.JS
-        - assets/html/soundfonts/  # 🔥 AGGIUNTO PER SOUNDFONT
+        - assets/html/js/
+        - assets/html/css/
+        - assets/html/js/vendor/
+        - assets/html/js/app/          # ðŸ”¥ AGGIUNTO PER MIDI.JS
+        - assets/html/soundfonts/  # ðŸ”¥ AGGIUNTO PER SOUNDFONT

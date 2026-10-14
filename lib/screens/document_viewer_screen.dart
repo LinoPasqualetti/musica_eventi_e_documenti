@@ -1,4 +1,4 @@
-// lib/screens/document_viewer_screen.dart
+﻿// lib/screens/document_viewer_screen.dart
 import 'package:url_launcher/url_launcher.dart';
 //
 // import 'package:android_intent_plus/android_intent.dart';
@@ -19,7 +19,9 @@ import '../services/mxl_service.dart';
 import '../utils/performance_logger.dart';
 
 // 🔥 IMPORT DELLE SCHERMATE INTERNE
-import 'abc_viewer_screen.dart';
+// // import 'abc_viewer_screen.dart';  // vecchio, sostituito da spartito_viewer_screen
+import 'spartito_viewer_screen.dart';  // vecchio, sostituito da spartito_viewer_screen
+import 'spartito_viewer_screen.dart';
 import 'mxl_viewer_screen.dart';
 
 
@@ -213,7 +215,6 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   }
 
   // 🎵 IMPLEMENTAZIONE AUDIO REALE
-// 🎵 IMPLEMENTAZIONE AUDIO REALE
   void _playAudio() async {
     try {
       if (_isMidi || widget.document.docType == 'kar') {
@@ -244,8 +245,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   }
 
   // 🎼 APRI MIDI/KAR IN WEBVIEW (OFFLINE - GESTIONE BLOB)
-// 🎼 APRI MIDI/KAR IN WEBVIEW (OFFLINE - GESTIONE BLOB con WebView)
-// 🎼 APRI MIDI/KAR IN WEBVIEW (usa CDN - nessun file locale)
+  // 🎼 APRI MIDI/KAR IN WEBVIEW (usa CDN - nessun file locale)
   Future<void> _openMidiInWebView() async {
     try {
       if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
@@ -399,9 +399,9 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     <div class="icon">🎵</div>
     <h3>${widget.document.fileName}</h3>
     <div class="file-info">File MIDI/KAR</div>
-    
+
     <div id="status" class="status stopped">⏸ Pronto per riprodurre</div>
-    
+
     <div class="progress">
       <div id="progressBar" class="progress-bar"></div>
     </div>
@@ -409,7 +409,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
       <span id="currentTime">0:00</span>
       <span id="totalTime">0:00</span>
     </div>
-    
+
     <div class="btn-group">
       <button id="playBtn" onclick="playMidi()">▶ Play</button>
       <button id="stopBtn" onclick="stopMidi()" disabled>⏹ Stop</button>
@@ -424,48 +424,48 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     let isPlaying = false;
     let progressInterval = null;
     let isInitialized = false;
-    
+
     const statusEl = document.getElementById('status');
     const playBtn = document.getElementById('playBtn');
     const stopBtn = document.getElementById('stopBtn');
     const progressBar = document.getElementById('progressBar');
     const currentTimeEl = document.getElementById('currentTime');
     const totalTimeEl = document.getElementById('totalTime');
-    
+
     function updateStatus(text, type) {
       statusEl.textContent = text;
       statusEl.className = 'status ' + type;
     }
-    
+
     function updateProgress(percent) {
       progressBar.style.width = Math.min(percent, 100) + '%';
     }
-    
+
     function formatTime(seconds) {
       if (!seconds || isNaN(seconds)) return '0:00';
       const mins = Math.floor(seconds / 60);
       const secs = Math.floor(seconds % 60);
       return mins + ':' + (secs < 10 ? '0' : '') + secs;
     }
-    
+
     function playMidi() {
       try {
         if (isPlaying) {
           stopMidi();
           return;
         }
-        
+
         playBtn.disabled = true;
         playBtn.textContent = '⏳ Caricamento...';
         updateStatus('⏳ Caricamento MIDI...', 'loading');
-        
+
         if (typeof MIDI === 'undefined') {
           updateStatus('❌ MIDI.js non disponibile. Usa "Apri esterno".', 'error');
           playBtn.disabled = false;
           playBtn.textContent = '▶ Play';
           return;
         }
-        
+
         if (!isInitialized) {
           MIDI.loadPlugin({
             soundfontUrl: 'https://cdnjs.cloudflare.com/ajax/libs/midi.js/4.0.0/soundfonts/',
@@ -492,7 +492,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         playBtn.textContent = '▶ Play';
       }
     }
-    
+
     function startPlayback() {
       try {
         player = new MIDI.Player();
@@ -534,7 +534,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         playBtn.textContent = '▶ Play';
       }
     }
-    
+
     function startPlaybackFallback() {
       try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -583,7 +583,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         stopBtn.disabled = true;
       }
     }
-    
+
     function stopMidi() {
       try {
         if (player) {
@@ -608,7 +608,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         console.error('Stop error:', error);
       }
     }
-    
+
     window.addEventListener('beforeunload', function() {
       if (player) {
         player.stop();
@@ -694,7 +694,8 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
       }
     }
   }
-// 🎵 APRI MIDI CON PLAYER DI SISTEMA (per Android - con dialog iniziale)
+
+  // 🎵 APRI MIDI CON PLAYER DI SISTEMA (per Android - con dialog iniziale)
   Future<void> _playMidiWithSystemPlayer() async {
     try {
       // 🔥 MOSTRA IL DIALOG INIZIALE CON SUGGERIMENTI
@@ -762,7 +763,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ Apertura "${fileName}" in corso...'),
+              content: Text('✅ Apertura "$fileName" in corso...'),
               backgroundColor: Colors.green,
               duration: const Duration(seconds: 2),
             ),
@@ -791,7 +792,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     }
   }
 
-// 🔥 DIALOG INIZIALE CON SUGGERIMENTI PER IL LETTORE MIDI
+  // 🔥 DIALOG INIZIALE CON SUGGERIMENTI PER IL LETTORE MIDI
   Future<bool> _showMidiPlayerDialog(BuildContext context) async {
     return await showDialog<bool>(
       context: context,
@@ -910,7 +911,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     ) ?? false;
   }
 
-// 🔥 HELPER PER GLI ITEM DEL DIALOG
+  // 🔥 HELPER PER GLI ITEM DEL DIALOG
   Widget _buildTipItem({required IconData icon, required String text}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -927,7 +928,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     );
   }
 
-// 🔥 APRI PLAY STORE CON RICERCA PER LETTORI MIDI
+  // 🔥 APRI PLAY STORE CON RICERCA PER LETTORI MIDI
   void _openPlayStoreSearch(BuildContext context) async {
     final Uri playStoreUrl = Uri.parse(
       'https://play.google.com/store/search?q=midi%20player&c=apps',
@@ -1130,125 +1131,147 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     );
   }
 
-  // 🖥️ APRI PAGINA INTERNA PER MXL/ABC (SU ANDROID USA WEBVIEW)
+  // 🖥️ APRI PAGINA INTERNA PER MXL/ABC (WebView unificata: Windows + Android + desktop)
   void _openInternalMxlViewer() async {
     try {
-      // 🔥 SU ANDROID: usa WebView per aprire l'HTML DENTRO l'app
-      if (Platform.isAndroid) {
-        // 1. LEGGI IL CONTENUTO (ABC o XML) dal file o dal BLOB
-        String content = '';
+      // 1. Leggi contenuto (ABC testuale o MusicXML testuale)
+      String content = '';
+      String contentType = 'abc'; // 'abc' | 'musicxml'
+      final docType = widget.document.docType.toLowerCase();
 
-        if (widget.document.docType.toLowerCase() == 'abc') {
-          if (widget.document.content != null) {
-            content = String.fromCharCodes(widget.document.content!);
-          } else if (_filePath != null) {
-            content = await File(_filePath!).readAsString();
-          }
-        } else if (widget.document.docType.toLowerCase() == 'mxl') {
-          if (widget.document.content != null) {
-            final tempDir = await getTemporaryDirectory();
-            final tempFile = File('${tempDir.path}/${widget.document.fileName}');
-            await tempFile.writeAsBytes(widget.document.content!);
-            content = await MxlService.extractXmlContent(tempFile.path) ?? '';
-          } else if (_filePath != null) {
-            content = await MxlService.extractXmlContent(_filePath!) ?? '';
-          }
+      if (docType == 'abc') {
+        if (widget.document.content != null && widget.document.content!.isNotEmpty) {
+          content = utf8.decode(widget.document.content!);
+        } else if (_filePath != null) {
+          content = await File(_filePath!).readAsString();
         }
+        contentType = 'abc';
+      } else if (docType == 'mxl') {
+        String? xml;
+        if (_filePath != null) {
+          xml = await MxlService.extractXmlContent(_filePath!);
+        }
+        if (xml == null && widget.document.content != null) {
+          final tempDir = await getTemporaryDirectory();
+          final tempFile = File('${tempDir.path}/${widget.document.fileName}');
+          await tempFile.writeAsBytes(widget.document.content!);
+          xml = await MxlService.extractXmlContent(tempFile.path);
+        }
+        content = xml ?? '';
+        contentType = 'musicxml';
+      }
 
-        // 2. LEGGI L'HTML DAGLI ASSET
-        final htmlString = await rootBundle.loadString('assets/html/spartito-viewer.html');
+      if (content.isEmpty) {
+        throw Exception('Contenuto vuoto per ${widget.document.fileName}');
+      }
 
-        // 3. INIETTA IL CONTENUTO NELLA TEXTAREA
-        final filledHtml = htmlString.replaceFirst(
-          RegExp(r'(?<=<textarea id="inputText"[^>]*>)(.*?)(?=</textarea>)', dotAll: true),
-          content,
-        );
+      // 2. Leggi HTML e INLINE di CSS/JS.
+      //    Necessario perché initialData con baseUrl="about:blank" NON risolve
+      //    i path relativi (<script src="js/...">, <link href="css/...">).
+      var htmlString = await rootBundle.loadString('assets/html/spartito-viewer.html');
+      final css     = await rootBundle.loadString('assets/html/css/spartito-viewer.css');
+      final jsAbcjs = await rootBundle.loadString('assets/html/js/vendor/abcjs_basic_6.6.4.js');
+      final jsZip   = await rootBundle.loadString('assets/html/js/vendor/jszip_3.10.1.js');
+      final jsMain  = await rootBundle.loadString('assets/html/js/app/main.js');
 
-        // 4. 🔥 AGGIUNGI UN SCRIPT CHE PREME "GENERA SPARTITO" DOPO 1 SECONDO
-        final scriptToAdd = '''
+      // Inline CSS
+      htmlString = htmlString.replaceFirst(
+        '<link rel="stylesheet" href="css/spartito-viewer.css">',
+        '<style>\n' + css + '\n</style>',
+      );
+
+      // Inline vendor JS
+      htmlString = htmlString
+          .replaceFirst(
+            '<script src="js/vendor/abcjs_basic_6.6.4.js"></script>',
+            '<script>\n' + jsAbcjs + '\n</script>',
+          )
+          .replaceFirst(
+            '<script src="js/vendor/jszip_3.10.1.js"></script>',
+            '<script>\n' + jsZip + '\n</script>',
+          )
+          // Inline main.js, con __FORCE_MODE__ in testa
+          .replaceFirst(
+            '<script src="js/app/main.js"></script>',
+            '<script>window.__FORCE_MODE__="embed";</script>\n<script>\n' + jsMain + '\n</script>',
+          );
+
+      // Fallback visibile se loadFromFlutter non arriva entro 2s
+      final fallbackScript = '''
         <script>
           setTimeout(function() {
-            var btn = document.getElementById('processBtn');
-            if (btn) {
-              btn.click();
+            if (!window.__LOAD_FROM_FLUTTER_CALLED__) {
+              var sheet = document.getElementById('sheet-music');
+              if (sheet) sheet.innerHTML = '<div style="padding:20px;color:#A23B2E;">In attesa del contenuto da Flutter...</div>';
             }
-          }, 1000);
-        </script>
-        ''';
+          }, 2000);
+        </script>''';
 
-        final finalHtml = filledHtml.replaceFirst('</body>', scriptToAdd + '</body>');
+      //final finalHtml = '\uFEFF' + htmlString.replaceFirst('</body>', fallbackScript + '</body>');
+      final finalHtml = '\uFEFF' + htmlString.replaceFirst('</body>', fallbackScript + '</body>');
+      // Scrivi su file temporaneo UTF-8 per evitare i problemi di encoding dei data: URL
+      final tempDir = await getTemporaryDirectory();
+      final htmlFile = File('${tempDir.path}/spartito_viewer_embed.html');
+      await htmlFile.writeAsBytes(utf8.encode(finalHtml), flush: true);
+      final fileUrl = Uri.file(htmlFile.path).toString();
+      debugPrint('📄 HTML embed: $fileUrl (${finalHtml.length} char)');
+      if (!mounted) return;
 
-        // 5. COPIA L'HTML NELLA MEMORIA DEL TELEFONO
-        final appDocDir = await getApplicationDocumentsDirectory();
-        final htmlFile = File('${appDocDir.path}/spartito_viewer.html');
-        await htmlFile.writeAsString(finalHtml);
-
-        // 6. 🔥 APRI CON WEBVIEW
-        if (!mounted) return;
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => Scaffold(
-              appBar: AppBar(
-                title: Text('Visualizza spartito'),
-                backgroundColor: Colors.deepPurple,
-                foregroundColor: Colors.white,
-              ),
-              body: InAppWebView(
-                initialUrlRequest: URLRequest(url: WebUri(htmlFile.path)),
-                onWebViewCreated: (controller) {
-                  print('✅ WebView creata per spartito');
-                },
-                onLoadError: (controller, url, code, message) {
-                  print('❌ WebView spartito error: $code - $message');
-                },
-              ),
+      // 3. Apri WebView con initialData UTF-8
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => Scaffold(
+            appBar: AppBar(
+              title: Text(widget.document.fileName),
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+            ),
+            body: InAppWebView(
+              initialUrlRequest: URLRequest(url: WebUri(fileUrl)),
+              onWebViewCreated: (controller) {
+                debugPrint('✅ WebView creata per spartito');
+              },
+              onConsoleMessage: (controller, msg) {
+                debugPrint('[WebView] ${msg.messageLevel}: ${msg.message}');
+              },
+              onLoadStop: (controller, url) async {
+                debugPrint('✅ Pagina spartito caricata: $url');
+                try {
+                  final base64Content = base64Encode(utf8.encode(content));
+                  final jsCode = '''
+                    window.__LOAD_FROM_FLUTTER_CALLED__ = true;
+                    if (typeof window.loadFromFlutter === 'function') {
+                      window.loadFromFlutter(
+                        ${jsonEncode(base64Content)},
+                        ${jsonEncode(contentType)}
+                      );
+                    } else {
+                      console.error('[Flutter] loadFromFlutter non definita');
+                    }
+                  ''';
+                  await controller.evaluateJavascript(source: jsCode);
+                  debugPrint('✅ loadFromFlutter invocata (${base64Content.length} char b64)');
+                } catch (e) {
+                  debugPrint('❌ Errore iniezione: $e');
+                }
+              },
+              onLoadError: (c, u, code, msg) =>
+                  debugPrint('WebView error: $code - $msg'),
             ),
           ),
-        );
-        return;
-      }
-
-      // 🔥 SU DESKTOP/WEB: usa la vecchia logica
-      if (widget.document.docType.toLowerCase() == 'abc') {
-        if (!mounted) return;
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => AbcViewerScreen(
-              filePath: _filePath!,
-              fileName: widget.document.fileName,
-            ),
-          ),
-        );
-      } else if (widget.document.docType.toLowerCase() == 'mxl') {
-        if (!mounted) return;
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => MxlViewerScreen(
-              document: widget.document.copyWith(filePath: _filePath),
-            ),
-          ),
-        );
-      } else {
-        await _openWithDefaultApp();
-      }
+        ),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Errore: Visualizzatore non trovato. $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('❌ Errore: $e'), backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  // 📂 APRI CON APP ESTERNA
-// 📂 APRI CON APP ESTERNA (Windows e Desktop)
-// 📂 APRI CON APP ESTERNA (Windows e Desktop - con nome originale)
+  // 📂 APRI CON APP ESTERNA (Windows e Desktop - con nome originale)
   Future<void> _openWithDefaultApp() async {
     try {
       // 🔥 Per Windows, se il file è MIDI/KAR, salvalo in una cartella permanente

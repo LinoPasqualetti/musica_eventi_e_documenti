@@ -1,4 +1,4 @@
-// [MODIFICA] C:\musica_eventi_e_documenti\lib\screens\abc_viewer_screen.dart
+﻿// [MODIFICA] C:\musica_eventi_e_documenti\lib\screens\abc_viewer_screen.dart
 
 // lib/screens/abc_viewer_screen.dart
 import 'package:flutter/material.dart';
@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import '../utils/constants.dart';
+import '../services/viewer_service.dart';
 
 class AbcViewerScreen extends StatefulWidget {
   final String filePath;
@@ -49,7 +50,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
       final file = File(widget.filePath);
       if (file.existsSync()) {
         _abcContent = file.readAsStringSync();
-        print('📄 ABC caricato: ${_abcContent.length} caratteri');
+        print('ðŸ“„ ABC caricato: ${_abcContent.length} caratteri');
       } else {
         _error = 'File non trovato: ${widget.filePath}';
       }
@@ -60,58 +61,30 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     }
   }
 
-  /// Invia l'ABC al backend web, ottiene un id, apre /viewer?id=... nel browser.
+  /// Apre l'ABC nel browser usando un viewer HTML locale (nessun backend).
   Future<void> _openInBrowser() async {
     setState(() => _isOpening = true);
     try {
-      // 1. POST /api/abc-temp
-      final apiBase = AppConstants.webApiBaseUrl;
-      final postUri = Uri.parse('$apiBase/api/abc-temp');
-
-      final res = await http
-          .post(
-        postUri,
-        headers: {'Content-Type': 'application/json; charset=utf-8'},
-        body: jsonEncode({
-          'abc': _abcContent,
-          'fileName': widget.fileName,
-        }),
-      )
-          .timeout(const Duration(seconds: 30));
-
-      if (res.statusCode != 200) {
-        throw 'Backend HTTP ${res.statusCode}: ${res.body}';
-      }
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final id = data['id'] as String?;
-      if (id == null) {
-        throw 'Risposta backend senza id: ${res.body}';
-      }
-
-      // 2. Componi URL del viewer
-      final viewerUri = Uri.parse('$apiBase/viewer').replace(
-        queryParameters: {
-          'id': id,
-          'fileName': widget.fileName,
-          'transpose': _transpose.toString(),
-          'instrument': _instrument.toString(),
-        },
+      final viewerPath = await ViewerService.buildAbcViewer(
+        abcContent: _abcContent,
+        fileName: widget.fileName,
+        transpose: _transpose,
+        instrument: _instrument,
       );
 
-      print('🌐 Apro viewer: $viewerUri');
+      final uri = Uri.file(viewerPath);
+      print('Apro viewer ABC locale: $uri');
 
-      // 3. Apri nel browser di sistema
-      if (await canLaunchUrl(viewerUri)) {
-        await launchUrl(viewerUri, mode: LaunchMode.externalApplication);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
       } else {
-        throw 'Impossibile aprire il browser per $viewerUri';
+        throw 'Impossibile aprire il browser per $viewerPath';
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('❌ Errore: $e'),
+            content: Text('Errore: $e'),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 6),
           ),
@@ -127,7 +100,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('📋 ABC copiato negli appunti!'),
+          content: Text('ðŸ“‹ ABC copiato negli appunti!'),
           backgroundColor: Colors.green,
         ),
       );
@@ -279,7 +252,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
                 )
                     : const Icon(Icons.open_in_new),
                 label: Text(
-                  _isOpening ? 'Apertura…' : 'Apri Spartito nel Browser',
+                  _isOpening ? 'Aperturaâ€¦' : 'Apri Spartito nel Browser',
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
                 style: ElevatedButton.styleFrom(
@@ -291,7 +264,7 @@ class _AbcViewerScreenState extends State<AbcViewerScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              '💡 Il browser si aprirà con la stessa visualizzazione del web: '
+              'ðŸ’¡ Il browser si aprirÃ  con la stessa visualizzazione del web: '
                   'multi-traccia, trasposizione, player audio e zoom.',
               style: TextStyle(
                 fontSize: 12,

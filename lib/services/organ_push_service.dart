@@ -75,6 +75,7 @@ class OrganPushService {
         },
         'slots': slots.map((s) => {
           'id': s.id,
+          'organ_id': s.organId,
           'instrument': s.instrument,
           'section': s.section.dbValue,
           'quantity': s.quantity,
@@ -107,6 +108,7 @@ class OrganPushService {
           },
           'slots': o.slots.map((s) => {
             'id': s.id,
+            'organ_id': s.organId,
             'instrument': s.instrument,
             'section': s.section.dbValue,
             'quantity': s.quantity,

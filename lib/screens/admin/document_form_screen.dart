@@ -1,4 +1,4 @@
-// lib/screens/admin/document_form_screen.dart
+﻿// lib/screens/admin/document_form_screen.dart
 
 import 'dart:io';
 import 'dart:typed_data';
@@ -6,16 +6,17 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../models/document.dart';
 import '../../services/database_service.dart';
+import '../../services/document_storage_policy.dart';
 import '../../utils/performance_logger.dart';
 
 class DocumentFormScreen extends StatefulWidget {
   final Document? document;
-  final String? songId;
+  //final String? songId;
 
   const DocumentFormScreen({
     Key? key,
     this.document,
-    this.songId,
+    //this.songId,
   }) : super(key: key);
 
   @override
@@ -77,8 +78,13 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
     try {
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: false,
-        type: FileType.custom,
-        allowedExtensions: _getAllowedExtensions(),
+        type: _selectedType != null && _selectedType!.isNotEmpty
+            ? FileType.custom
+            : FileType.any,
+        allowedExtensions: _selectedType != null
+            ? _getAllowedExtensions()
+            : null,
+        withData: false,   // 🔥 non caricare in memoria subito
       );
 
       if (result != null && result.files.isNotEmpty) {
@@ -104,7 +110,8 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
           }
         });
 
-        PerformanceLogger.info('File selezionato', details: '$name (${_formatFileSize(size)})');
+        PerformanceLogger.info('File selezionato',
+            details: '$name (${_formatFileSize(size)})');
       }
     } catch (e) {
       PerformanceLogger.error('_pickFile fallito', error: e);
@@ -225,33 +232,36 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
       final fileName = _fileName ?? _titleController.text;
       final filePath = _selectedFilePath!;
 
-      // 🔥 LEGGI IL FILE COME BLOB PER MXL/ABC/MIDI/KAR
-      Uint8List? content;
-      String storageMode = 'filesystem';
+      // 🔥 DECISIONE CENTRALIZZATA blob vs filesystem
+      String storageMode = DocumentStoragePolicy.decide(
+        filePath: filePath,
+        fileSize: _fileSize,
+      );
 
-      if (['mxl', 'abc', 'mid', 'kar'].contains(docType)) {
+      Uint8List? content;
+      if (storageMode == 'blob') {
         try {
           if (_fileBytes != null) {
             content = _fileBytes;
-            storageMode = 'blob';
-            print('📦 BLOB da memoria: ${content!.length} bytes per $docType - $fileName');
           } else {
             final file = File(filePath);
             if (await file.exists()) {
               content = await file.readAsBytes();
-              storageMode = 'blob';
-              print('📦 BLOB letto da file: ${content.length} bytes per $docType - $fileName');
             } else {
-              print('⚠️ File non trovato: $filePath');
+              // File non trovato: fallback a filesystem, non blob-are
+              storageMode = 'filesystem';
             }
           }
         } catch (e) {
           print('❌ Errore lettura BLOB: $e');
+          storageMode = 'filesystem';
+          content = null;
         }
       }
 
       final document = Document(
-        id: widget.document?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        id: widget.document?.id ??
+            DateTime.now().millisecondsSinceEpoch.toString(),
         docType: docType,
         fileName: fileName,
         filePath: filePath,
@@ -262,14 +272,99 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
         createdAt: DateTime.now().toIso8601String(),
         updatedAt: null,
         content: content,
-        storageMode: storageMode,  // 🔥 SALVA storage_mode
-        songId: widget.songId,
+        storageMode: storageMode,
+        //songId: widget.songId,
       );
 
       if (widget.document == null) {
-        await _db.insertDocument(document);
+              // --- CHECK DUPLICATI ---
+      final duplicate = await _db.findDuplicateDocument(document);
+
+      if (duplicate != null) {
+        final choice = await showDialog<String>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Possibile duplicato'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Esiste gia un documento con lo stesso nome e tipo:'),
+                const SizedBox(height: 8),
+                Text('Nome: ${duplicate.fileName}'),
+                Text('ID: ${duplicate.id}'),
+                Text('Creato: ${duplicate.createdAt}'),
+                const SizedBox(height: 12),
+                const Text('Cosa vuoi fare?'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'cancel'),
+                child: const Text('Annulla'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'new'),
+                child: const Text('Salva come nuovo'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, 'merge'),
+                child: const Text('Unisci'),
+              ),
+            ],
+          ),
+        );
+
+        if (choice == null || choice == 'cancel') return;
+
+        if (choice == 'merge') {
+          final keepExisting = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Unisci documenti'),
+              content: const Text(
+                'Quale documento vuoi mantenere?\n\n'
+                '- Tieni esistente: mantiene l ID corrente, aggiorna il contenuto col nuovo\n'
+                '- Tieni nuovo: mantiene il nuovo ID, sposta le relazioni del vecchio',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Tieni esistente'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Tieni nuovo'),
+                ),
+              ],
+            ),
+          );
+
+          if (keepExisting == null) return;
+
+          await _db.mergeDocument(
+            existingId: duplicate.id,
+            newDoc: document,
+            keepExisting: keepExisting,
+          );
+
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Documenti uniti con successo'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          Navigator.pop(context, true);
+          return;
+        }
+      }
+
+await _db.insertDocument(document);
         PerformanceLogger.info('Documento creato',
-            details: '${document.fileName} (${storageMode})');
+            details: '${document.fileName} ($storageMode)');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Documento aggiunto con successo'),
@@ -279,7 +374,7 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
       } else {
         await _db.updateDocument(document);
         PerformanceLogger.info('Documento aggiornato',
-            details: '${document.fileName} (${storageMode})');
+            details: '${document.fileName} ($storageMode)');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Documento aggiornato con successo'),
@@ -289,7 +384,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
       }
 
       Navigator.pop(context, true);
-
     } catch (e) {
       PerformanceLogger.error('_saveDocument fallito', error: e);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -311,7 +405,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.document == null ? 'Nuovo Documento' : 'Modifica Documento'),
+        title: Text(widget.document == null
+            ? 'Nuovo Documento'
+            : 'Modifica Documento'),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
         actions: [
@@ -330,7 +426,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Tipo documento
                 DropdownButtonFormField<String>(
                   value: _selectedType,
                   decoration: const InputDecoration(
@@ -360,8 +455,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-
-                // Nome file
                 TextFormField(
                   controller: _titleController,
                   decoration: const InputDecoration(
@@ -376,8 +469,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-
-                // Descrizione
                 TextFormField(
                   controller: _descriptionController,
                   decoration: const InputDecoration(
@@ -387,8 +478,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                   maxLines: 3,
                 ),
                 const SizedBox(height: 16),
-
-                // Selezione file
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -406,7 +495,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                                   ? '📎 $_fileName (${_formatFileSize(_fileSize)})'
                                   : 'Nessun file selezionato',
                               style: TextStyle(
-                                color: _fileName != null ? Colors.black : Colors.grey,
+                                color: _fileName != null
+                                    ? Colors.black
+                                    : Colors.grey,
                               ),
                             ),
                           ),
@@ -423,15 +514,14 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                           padding: const EdgeInsets.only(top: 8),
                           child: Text(
                             '📂 ${_selectedFilePath!.replaceAll('\\', '/')}',
-                            style: const TextStyle(fontSize: 12, color: Colors.grey),
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
                           ),
                         ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 16),
-
-                // Informazioni BLOB per i tipi strutturati
                 if (_selectedType != null &&
                     ['mxl', 'abc', 'mid', 'kar'].contains(_selectedType))
                   Container(
@@ -443,11 +533,13 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline, size: 16, color: Colors.blue),
+                        const Icon(Icons.info_outline,
+                            size: 16, color: Colors.blue),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            '💾 Il file verrà salvato come BLOB nel database per una gestione ottimale',
+                            '💾 I file piccoli (< 1 MB) verranno salvati come BLOB nel DB; '
+                                'i file grandi resteranno sul filesystem.',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.blue.shade700,
@@ -458,8 +550,6 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                     ),
                   ),
                 const SizedBox(height: 8),
-
-                // Pubblico
                 SwitchListTile(
                   title: const Text('Documento pubblico'),
                   subtitle: Text(
@@ -476,13 +566,13 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                   activeColor: Colors.deepPurple,
                 ),
                 const SizedBox(height: 24),
-
-                // Pulsanti
                 Row(
                   children: [
                     Expanded(
                       child: OutlinedButton(
-                        onPressed: _isLoading ? null : () => Navigator.pop(context),
+                        onPressed: _isLoading
+                            ? null
+                            : () => Navigator.pop(context),
                         child: const Text('Annulla'),
                       ),
                     ),
@@ -494,7 +584,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
                           backgroundColor: Colors.deepPurple,
                           foregroundColor: Colors.white,
                         ),
-                        child: Text(widget.document == null ? 'Aggiungi' : 'Aggiorna'),
+                        child: Text(
+                          widget.document == null ? 'Aggiungi' : 'Aggiorna',
+                        ),
                       ),
                     ),
                   ],
@@ -509,7 +601,9 @@ class _DocumentFormScreenState extends State<DocumentFormScreen> {
 
   String _formatFileSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }

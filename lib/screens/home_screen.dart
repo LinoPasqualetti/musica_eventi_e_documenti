@@ -7,7 +7,7 @@ import '../services/database_service.dart';
 import '../models/event_model.dart';
 import '../widgets/event_card.dart';
 import 'event_detail_screen.dart';
-import 'admin_screen.dart';
+import 'admin/admin_dashboard.dart';
 import 'admin_login_screen.dart';
 import 'login_screen.dart';
 import 'register_screen.dart';
@@ -374,7 +374,7 @@ ${_errorStackTrace ?? 'Nessuno stack trace'}
                 print('✅ Utente admin, apro dashboard');
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const AdminScreen()),
+                  MaterialPageRoute(builder: (context) => const AdminDashboard()),
                 );
               } else {
                 print('❌ Utente non admin, apro login admin');
